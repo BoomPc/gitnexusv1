@@ -48,6 +48,33 @@ interface CsharpFileStructure {
   readonly usingStaticPaths: readonly string[];
 }
 
+export function extractCsharpFileStructureFromParsed(parsed: ParsedFile): CsharpFileStructure {
+  const explicitNamespaces = parsed.localDefs
+    .filter((def) => def.type === 'Namespace')
+    .map((def) => def.qualifiedName)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+  const namespaces =
+    explicitNamespaces.length > 0 ? explicitNamespaces : namespacesFromQualifiedTypeDefs(parsed);
+  return { namespaces, usingStaticPaths: [] };
+}
+
+function namespacesFromQualifiedTypeDefs(parsed: ParsedFile): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const def of parsed.localDefs) {
+    if (!isTypeDef(def)) continue;
+    const q = def.qualifiedName;
+    if (q === undefined) continue;
+    const idx = q.lastIndexOf('.');
+    if (idx <= 0) continue;
+    const ns = q.slice(0, idx);
+    if (seen.has(ns)) continue;
+    seen.add(ns);
+    out.push(ns);
+  }
+  return out;
+}
+
 /** Build a structural view of a C# file by walking the tree-sitter
  *  AST. Prefers `cachedTree` (handed in via `treeCache`) so we don't
  *  re-parse files the orchestrator already parsed for `extractParsedFile`;
@@ -130,9 +157,12 @@ export function populateCsharpNamespaceSiblings(
   const structureByFile = new Map<string, CsharpFileStructure>();
   for (const parsed of parsedFiles) {
     const content = inputs.fileContents.get(parsed.filePath);
-    if (content === undefined) continue;
-    const cachedTree = inputs.treeCache?.get(parsed.filePath);
-    structureByFile.set(parsed.filePath, extractFileStructure(content, cachedTree));
+    if (content === undefined) {
+      structureByFile.set(parsed.filePath, extractCsharpFileStructureFromParsed(parsed));
+    } else {
+      const cachedTree = inputs.treeCache?.get(parsed.filePath);
+      structureByFile.set(parsed.filePath, extractFileStructure(content, cachedTree));
+    }
   }
 
   // Group namespace scopes by their dotted name. Each entry carries

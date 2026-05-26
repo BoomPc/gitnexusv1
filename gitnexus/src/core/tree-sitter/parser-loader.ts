@@ -1,5 +1,6 @@
 import Parser from 'tree-sitter';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
@@ -76,7 +77,7 @@ const SOURCES: Record<string, GrammarSource> = {
   // deprecation warning on the bare-package import. The explicit subpath
   // bypasses the deprecated ESM main-field resolution. (#1013)
   [SupportedLanguages.CSharp]: {
-    load: () => _require('tree-sitter-c-sharp/bindings/node/index.js'),
+    load: loadCSharpGrammar,
     unavailableNote:
       'C# parsing requires `tree-sitter-c-sharp/bindings/node/index.js`. ' +
       `If the subpath is missing, see ${ISSUES_URL}/1013.`,
@@ -162,6 +163,13 @@ const SOURCES: Record<string, GrammarSource> = {
       'and is not installed (or its native binding failed to build).',
   },
 };
+
+function loadCSharpGrammar(): unknown {
+  const pkgPath = _require.resolve('tree-sitter-c-sharp/package.json');
+  const packageRoot = path.dirname(pkgPath);
+  const nodeGypBuild = _require('node-gyp-build') as (dir: string) => unknown;
+  return nodeGypBuild(packageRoot);
+}
 
 type LoadResult =
   | { ok: true; grammar: unknown }

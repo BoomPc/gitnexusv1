@@ -23,6 +23,49 @@ import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 export interface CsharpResolveContext {
   readonly fromFile: string;
   readonly allFilePaths: ReadonlySet<string>;
+  readonly importTargetIndex?: CsharpImportTargetIndex;
+}
+
+export interface CsharpImportTargetIndex {
+  readonly exactFiles: ReadonlyMap<string, string>;
+  readonly suffixFiles: ReadonlyMap<string, string>;
+  readonly directoryChildren: ReadonlyMap<string, string>;
+}
+
+export function buildCsharpImportTargetIndex(
+  allFilePaths: ReadonlySet<string>,
+): CsharpImportTargetIndex {
+  const exactFiles = new Map<string, string>();
+  const suffixFiles = new Map<string, string>();
+  const directoryChildren = new Map<string, string>();
+
+  for (const raw of allFilePaths) {
+    const f = raw.replace(/\\/g, '/');
+    if (!f.endsWith('.cs')) continue;
+
+    exactFiles.set(f.slice(0, -'.cs'.length), raw);
+
+    const withoutExt = f.slice(0, -'.cs'.length);
+    const segments = withoutExt.split('/').filter(Boolean);
+    for (let start = 1; start < segments.length; start++) {
+      const tail = segments.slice(start).join('/');
+      if (!suffixFiles.has(tail)) suffixFiles.set(tail, raw);
+    }
+
+    const dir = f.slice(0, f.lastIndexOf('/') + 1);
+    if (dir !== '') {
+      const namespaceDir = dir.slice(0, -1);
+      if (!directoryChildren.has(namespaceDir)) directoryChildren.set(namespaceDir, raw);
+
+      const dirSegments = namespaceDir.split('/').filter(Boolean);
+      for (let start = 1; start < dirSegments.length; start++) {
+        const tailDir = dirSegments.slice(start).join('/');
+        if (!directoryChildren.has(tailDir)) directoryChildren.set(tailDir, raw);
+      }
+    }
+  }
+
+  return { exactFiles, suffixFiles, directoryChildren };
 }
 
 export function resolveCsharpImportTarget(
@@ -37,7 +80,7 @@ export function resolveCsharpImportTarget(
   if (
     ctx === undefined ||
     typeof (ctx as { fromFile?: unknown }).fromFile !== 'string' ||
-    !((ctx as { allFilePaths?: unknown }).allFilePaths instanceof Set)
+    !isReadonlyStringSet((ctx as { allFilePaths?: unknown }).allFilePaths)
   ) {
     return null;
   }
@@ -47,6 +90,9 @@ export function resolveCsharpImportTarget(
   // Namespace path: `System.Collections.Generic` → `System/Collections/Generic`.
   const pathLike = parsedImport.targetRaw.replace(/\./g, '/');
   const suffix = `/${pathLike}`;
+
+  const indexed = resolveFromIndex(pathLike, ctx.importTargetIndex);
+  if (indexed !== null) return indexed;
 
   // Exact file match: `System/Collections/Generic.cs` (rare but legal).
   // Suffix match for nested layouts: `src/lib/System/Collections/Generic.cs`.
@@ -127,4 +173,42 @@ export function resolveCsharpImportTarget(
   }
 
   return null;
+}
+
+function isReadonlyStringSet(value: unknown): value is ReadonlySet<string> {
+  return (
+    value instanceof Set ||
+    (typeof value === 'object' &&
+      value !== null &&
+      typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function')
+  );
+}
+
+function resolveFromIndex(
+  pathLike: string,
+  index: CsharpImportTargetIndex | undefined,
+): string | null {
+  if (index === undefined) return null;
+
+  const direct = resolveSinglePathLike(pathLike, index);
+  if (direct !== null) return direct;
+
+  const segments = pathLike.split('/').filter(Boolean);
+  for (let skip = 1; skip < segments.length; skip++) {
+    const tail = segments.slice(skip).join('/');
+    if (tail === '') continue;
+    const resolved = resolveSinglePathLike(tail, index);
+    if (resolved !== null) return resolved;
+  }
+
+  return null;
+}
+
+function resolveSinglePathLike(pathLike: string, index: CsharpImportTargetIndex): string | null {
+  return (
+    index.exactFiles.get(pathLike) ??
+    index.suffixFiles.get(pathLike) ??
+    index.directoryChildren.get(pathLike) ??
+    null
+  );
 }

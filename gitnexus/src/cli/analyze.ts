@@ -158,6 +158,10 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
+  /** Override parse worker pool size. */
+  workerCount?: string;
+  /** Fast, lower-memory mode tuned for very large .NET/C# repositories. */
+  netcoreFast?: boolean;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
@@ -208,6 +212,26 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
       Math.round(workerTimeoutSeconds * 1000),
     );
+  }
+
+  if (options?.workerCount) {
+    const workerCount = Number(options.workerCount);
+    if (!Number.isInteger(workerCount) || workerCount <= 0) {
+      cliError('  --worker-count must be a positive integer.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WORKER_COUNT = String(workerCount);
+  }
+
+  if (options?.netcoreFast) {
+    process.env.GITNEXUS_NETCORE_FAST = '1';
+    process.env.GITNEXUS_WORKER_COUNT = process.env.GITNEXUS_WORKER_COUNT || '1';
+    process.env.GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES =
+      process.env.GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES || '262144';
+    process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS =
+      process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS || '120000';
+    process.env.GITNEXUS_CHUNK_BYTE_BUDGET = process.env.GITNEXUS_CHUNK_BYTE_BUDGET || '524288';
   }
 
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
@@ -471,6 +495,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
         allowDuplicateName: options?.allowDuplicateName,
+        netcoreFast: options?.netcoreFast,
       },
       {
         onProgress: (_phase, percent, message) => {

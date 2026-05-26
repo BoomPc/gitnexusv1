@@ -109,6 +109,16 @@ export function emitCsharpScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    if (grouped['@scope.namespace'] !== undefined) {
+      const name = grouped['@scope.namespace.name'];
+      if (name !== undefined) {
+        out.push({
+          '@declaration.namespace': grouped['@scope.namespace'],
+          '@declaration.name': { ...name, name: '@declaration.name' },
+        });
+      }
+    }
+
     // Decompose each `using_directive` so `interpretCsharpImport` sees
     // the kind/source/name/alias markers it consumes. Raw query match
     // only carries the @import.statement anchor.

@@ -70,6 +70,11 @@ program
     '--worker-timeout <seconds>',
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   )
+  .option('--worker-count <n>', 'Limit parse worker threads. Default: min(8, cpu count - 1).')
+  .option(
+    '--netcore-fast',
+    'Fast low-memory mode for large .NET/C# repos: lighter parsing, no graph/process phases.',
+  )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
@@ -79,6 +84,8 @@ program
     '\nEnvironment variables:\n' +
       '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
+      '  GITNEXUS_WORKER_COUNT=N  Limit parse worker threads. Default min(8, CPU count - 1).\n' +
+      '  GITNEXUS_NETCORE_FAST=1  Fast low-memory mode for large .NET/C# repos.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
       '  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n' +
@@ -230,6 +237,34 @@ program
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
   .action(createLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
+
+const netcore = program.command('netcore').description('Fast .NET/C# index helpers');
+
+netcore
+  .command('summary')
+  .description('Show .NET fast index project and host summary')
+  .option('-r, --repo <path>', 'Repository path (defaults to cwd)')
+  .action(createLazyAction(() => import('./netcore.js'), 'netcoreSummaryCommand'));
+
+netcore
+  .command('impact <target>')
+  .description('Find owning .csproj and likely host services for a file path or class name')
+  .option('-r, --repo <path>', 'Repository path (defaults to cwd)')
+  .action(createLazyAction(() => import('./netcore.js'), 'netcoreImpactCommand'));
+
+netcore
+  .command('mq <topic>')
+  .description('Show MQ providers/consumers for a fast-index topic')
+  .option('-r, --repo <path>', 'Repository path (defaults to cwd)')
+  .action(createLazyAction(() => import('./netcore.js'), 'netcoreMqCommand'));
+
+netcore
+  .command('release-candidates')
+  .description('Use git diff and netcore fast index to suggest candidate release services')
+  .option('-r, --repo <path>', 'Repository path (defaults to cwd)')
+  .option('-s, --scope <scope>', 'unstaged, staged, all, or compare', 'unstaged')
+  .option('-b, --base-ref <ref>', 'Base ref for compare scope')
+  .action(createLazyAction(() => import('./netcore.js'), 'netcoreReleaseCandidatesCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 

@@ -35,7 +35,7 @@ const FASTAPI_PATTERNS = compilePatterns({
         (decorator
           (call
             function: (attribute
-              object: (identifier) @obj (#eq? @obj "app")
+              object: (identifier) @obj (#match? @obj "^(app|router|api|blueprint)$")
               attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
             arguments: (argument_list . (string) @path)))
       `,

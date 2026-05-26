@@ -9,6 +9,7 @@ import {
   TYPESCRIPT_TOPIC_PROVIDER,
   TSX_TOPIC_PROVIDER,
 } from './node.js';
+import { CSHARP_TOPIC_PROVIDER } from './csharp.js';
 
 export type { TopicMeta, Broker } from './types.js';
 
@@ -30,6 +31,7 @@ const REGISTRY: Record<string, CompiledPatterns<TopicMeta>> = {
   '.jsx': JAVASCRIPT_TOPIC_PROVIDER,
   '.ts': TYPESCRIPT_TOPIC_PROVIDER,
   '.tsx': TSX_TOPIC_PROVIDER,
+  '.cs': CSHARP_TOPIC_PROVIDER,
 };
 
 /**
@@ -37,7 +39,7 @@ const REGISTRY: Record<string, CompiledPatterns<TopicMeta>> = {
  * language to the registry also widens the glob automatically via a
  * single edit.
  */
-export const TOPIC_SCAN_GLOB = '**/*.{ts,tsx,js,jsx,java,go,py}';
+export const TOPIC_SCAN_GLOB = '**/*.{ts,tsx,js,jsx,java,go,py,cs}';
 
 /**
  * Return the compiled provider registered for the given file's

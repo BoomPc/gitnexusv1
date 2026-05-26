@@ -114,9 +114,33 @@ export function normalizeContractId(id: string): string {
   }
 }
 
-function findMatchingKeys(contractId: string, index: Map<string, StoredContract[]>): string[] {
+function findMatchingKeys(
+  contractId: string,
+  index: Map<string, StoredContract[]>,
+  stripPrefixes?: string[],
+): string[] {
   const normalized = normalizeContractId(contractId);
   if (index.has(normalized)) return [normalized];
+
+  // Try stripping configured proxy prefixes from the consumer path.
+  // e.g. consumer `http::GET::/console/api/store/zentao/loadbindinfo`
+  // with strip_prefixes=["/console/api"] matches provider
+  // `http::GET::/store/zentao/loadbindinfo`.
+  if (normalized.startsWith('http::') && stripPrefixes?.length) {
+    const colonParts = normalized.split('::');
+    if (colonParts.length >= 3) {
+      const method = colonParts[1];
+      const pathPart = colonParts.slice(2).join('::');
+      for (const prefix of stripPrefixes) {
+        const normalizedPrefix = prefix.replace(/\/+$/, '');
+        if (pathPart.startsWith(normalizedPrefix + '/')) {
+          const stripped = pathPart.substring(normalizedPrefix.length);
+          const candidate = `http::${method}::${stripped.replace(/\/+$/, '')}`;
+          if (index.has(candidate)) return [candidate];
+        }
+      }
+    }
+  }
 
   if (normalized.startsWith('http::*::')) {
     const pathPart = normalized.substring('http::*::'.length);
@@ -192,7 +216,11 @@ export function runExactMatch(
   const matchedProviderIds = new Set<string>();
 
   for (const consumer of consumers) {
-    const matchingKeys = findMatchingKeys(consumer.contractId, index);
+    const matchingKeys = findMatchingKeys(
+      consumer.contractId,
+      index,
+      matchingConfig?.http_consumer_strip_prefixes,
+    );
     if (matchingKeys.length === 0) continue;
 
     const allMatchingProviders = matchingKeys.flatMap((k) => index.get(k) || []);

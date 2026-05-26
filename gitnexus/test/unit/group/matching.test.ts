@@ -823,4 +823,125 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
     expect(matched).toHaveLength(1);
   });
+
+  describe('http_consumer_strip_prefixes', () => {
+    it('strips configured prefix from consumer path to match provider', () => {
+      const contracts: StoredContract[] = [
+        {
+          contractId: 'http::GET::/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'provider',
+          symbolUid: 'uid-backend',
+          symbolRef: { filePath: 'src/Controller.java', name: 'loadBindInfo' },
+          symbolName: 'loadBindInfo',
+          confidence: 0.9,
+          meta: {},
+          repo: 'backend',
+        },
+        {
+          contractId: 'http::GET::/console/api/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'consumer',
+          symbolUid: 'uid-frontend',
+          symbolRef: { filePath: 'src/api.js', name: 'fetch' },
+          symbolName: 'fetch',
+          confidence: 0.7,
+          meta: {},
+          repo: 'frontend',
+        },
+      ];
+
+      const matchingConfig: MatchingConfig = {
+        bm25_threshold: 0.7,
+        embedding_threshold: 0.65,
+        max_candidates_per_step: 3,
+        http_consumer_strip_prefixes: ['/console/api'],
+      };
+
+      const providerIndex = buildProviderIndex(contracts, matchingConfig);
+      const { matched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+      expect(matched).toHaveLength(1);
+      expect(matched[0].from.repo).toBe('frontend');
+      expect(matched[0].to.repo).toBe('backend');
+    });
+
+    it('does not strip prefix when not configured', () => {
+      const contracts: StoredContract[] = [
+        {
+          contractId: 'http::GET::/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'provider',
+          symbolUid: 'uid-backend',
+          symbolRef: { filePath: 'src/Controller.java', name: 'loadBindInfo' },
+          symbolName: 'loadBindInfo',
+          confidence: 0.9,
+          meta: {},
+          repo: 'backend',
+        },
+        {
+          contractId: 'http::GET::/console/api/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'consumer',
+          symbolUid: 'uid-frontend',
+          symbolRef: { filePath: 'src/api.js', name: 'fetch' },
+          symbolName: 'fetch',
+          confidence: 0.7,
+          meta: {},
+          repo: 'frontend',
+        },
+      ];
+
+      const matchingConfig: MatchingConfig = {
+        bm25_threshold: 0.7,
+        embedding_threshold: 0.65,
+        max_candidates_per_step: 3,
+      };
+
+      const providerIndex = buildProviderIndex(contracts, matchingConfig);
+      const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+      expect(matched).toHaveLength(0);
+      expect(unmatched.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('tries multiple prefixes in order and uses first match', () => {
+      const contracts: StoredContract[] = [
+        {
+          contractId: 'http::GET::/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'provider',
+          symbolUid: 'uid-backend',
+          symbolRef: { filePath: 'src/Controller.java', name: 'loadBindInfo' },
+          symbolName: 'loadBindInfo',
+          confidence: 0.9,
+          meta: {},
+          repo: 'backend',
+        },
+        {
+          contractId: 'http::GET::/proxy/api/store/zentao/loadbindinfo',
+          type: 'http',
+          role: 'consumer',
+          symbolUid: 'uid-frontend',
+          symbolRef: { filePath: 'src/api.js', name: 'fetch' },
+          symbolName: 'fetch',
+          confidence: 0.7,
+          meta: {},
+          repo: 'frontend',
+        },
+      ];
+
+      const matchingConfig: MatchingConfig = {
+        bm25_threshold: 0.7,
+        embedding_threshold: 0.65,
+        max_candidates_per_step: 3,
+        http_consumer_strip_prefixes: ['/console/api', '/proxy/api'],
+      };
+
+      const providerIndex = buildProviderIndex(contracts, matchingConfig);
+      const { matched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+      expect(matched).toHaveLength(1);
+    });
+  });
 });

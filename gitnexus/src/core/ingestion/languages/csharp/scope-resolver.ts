@@ -13,6 +13,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { csharpProvider } from '../csharp.js';
 import {
+  buildCsharpImportTargetIndex,
   csharpArityCompatibility,
   csharpMergeBindings,
   resolveCsharpImportTarget,
@@ -21,13 +22,21 @@ import {
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
 import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
 
+const importTargetIndexCache = new WeakMap<
+  ReadonlySet<string>,
+  ReturnType<typeof buildCsharpImportTargetIndex>
+>();
+
 const csharpScopeResolver: ScopeResolver = {
   language: SupportedLanguages.CSharp,
   languageProvider: csharpProvider,
   importEdgeReason: 'csharp-scope: using',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: CsharpResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+    const index = isCsharpImportTargetIndex(resolutionConfig)
+      ? resolutionConfig
+      : cachedImportTargetIndex(allFilePaths);
+    const ws: CsharpResolveContext = { fromFile, allFilePaths, importTargetIndex: index };
     // `WorkspaceIndex` is an opaque `unknown` placeholder in the
     // shared contract, so `ws` passes structurally without a cast.
     return resolveCsharpImportTarget(
@@ -86,3 +95,26 @@ const csharpScopeResolver: ScopeResolver = {
 };
 
 export { csharpScopeResolver };
+
+function cachedImportTargetIndex(
+  allFilePaths: ReadonlySet<string>,
+): ReturnType<typeof buildCsharpImportTargetIndex> {
+  let index = importTargetIndexCache.get(allFilePaths);
+  if (index === undefined) {
+    index = buildCsharpImportTargetIndex(allFilePaths);
+    importTargetIndexCache.set(allFilePaths, index);
+  }
+  return index;
+}
+
+function isCsharpImportTargetIndex(
+  value: unknown,
+): value is ReturnType<typeof buildCsharpImportTargetIndex> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { exactFiles?: unknown }).exactFiles instanceof Map &&
+    (value as { suffixFiles?: unknown }).suffixFiles instanceof Map &&
+    (value as { directoryChildren?: unknown }).directoryChildren instanceof Map
+  );
+}

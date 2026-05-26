@@ -43,6 +43,13 @@ import {
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
+import {
+  loadNetcoreFastIndex,
+  netcoreImpact,
+  netcoreMq,
+  netcoreReleaseCandidates,
+  netcoreSummary,
+} from '../../core/netcore-fast-index.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -700,6 +707,22 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'netcore_summary':
+        return netcoreSummary(await loadNetcoreFastIndex(repo.repoPath));
+      case 'netcore_impact':
+        return netcoreImpact(
+          await loadNetcoreFastIndex(repo.repoPath),
+          String(params?.target ?? ''),
+        );
+      case 'netcore_mq':
+        return netcoreMq(await loadNetcoreFastIndex(repo.repoPath), String(params?.topic ?? ''));
+      case 'netcore_release_candidates':
+        return netcoreReleaseCandidates(
+          await loadNetcoreFastIndex(repo.repoPath),
+          repo.repoPath,
+          params?.scope ?? 'unstaged',
+          params?.base_ref,
+        );
       default:
         throw new Error(`Unknown tool: ${method}`);
     }

@@ -2,8 +2,11 @@
   "mcpServers": {
     "gitnexus": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "gitnexus@latest", "mcp"]
+      "command": "node",
+      "args": [
+        "C:\\Users\\Administrator\\Documents\\GitNexus\\gitnexus\\dist\\cli\\index.js",
+        "mcp"
+      ]
     }
   }
 }

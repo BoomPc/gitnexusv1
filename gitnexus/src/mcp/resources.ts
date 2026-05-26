@@ -7,6 +7,7 @@
 
 import type { LocalBackend } from './local/local-backend.js';
 import { checkStaleness } from './staleness.js';
+import { loadNetcoreFastIndex, netcoreSummary } from '../core/netcore-fast-index.js';
 
 export interface ResourceDefinition {
   uri: string;
@@ -82,6 +83,24 @@ export function getResourceTemplates(): ResourceTemplate[] {
       uriTemplate: 'gitnexus://repo/{name}/process/{processName}',
       name: 'Process Trace',
       description: 'Step-by-step execution trace',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/netcore',
+      name: 'NetCore Fast Summary',
+      description: 'Fast .NET/C# project, host, and MQ summary',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/netcore/projects',
+      name: 'NetCore Projects',
+      description: '.NET csproj dependency graph from netcore-fast index',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/netcore/mq',
+      name: 'NetCore MQ',
+      description: 'MQ endpoints and topic links from netcore-fast index',
       mimeType: 'text/yaml',
     },
     {
@@ -259,6 +278,12 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
       return getClusterDetailResource(parsed.param!, backend, repoName);
     case 'process':
       return getProcessDetailResource(parsed.param!, backend, repoName);
+    case 'netcore':
+      return getNetcoreResource(backend, repoName, 'summary');
+    case 'netcore/projects':
+      return getNetcoreResource(backend, repoName, 'projects');
+    case 'netcore/mq':
+      return getNetcoreResource(backend, repoName, 'mq');
     default:
       throw new Error(`Unknown resource: ${uri}`);
   }
@@ -296,6 +321,18 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   }
 
   return lines.join('\n');
+}
+
+async function getNetcoreResource(
+  backend: LocalBackend,
+  repoName: string | undefined,
+  type: 'summary' | 'projects' | 'mq',
+): Promise<string> {
+  const repo = await backend.resolveRepo(repoName);
+  const index = await loadNetcoreFastIndex(repo.repoPath);
+  if (type === 'summary') return JSON.stringify(netcoreSummary(index), null, 2);
+  if (type === 'projects') return JSON.stringify({ projects: index.projects ?? [] }, null, 2);
+  return JSON.stringify({ mq: index.mq ?? { endpoints: [], links: [] } }, null, 2);
 }
 
 /**

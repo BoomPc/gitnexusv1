@@ -34,6 +34,7 @@ describe('analyzeCommand worker timeout validation', () => {
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
     delete process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
+    delete process.env.GITNEXUS_WORKER_COUNT;
   });
 
   it.each(['0', 'abc', '-5', 'Infinity'])(
@@ -68,6 +69,39 @@ describe('analyzeCommand worker timeout validation', () => {
     await analyzeCommand(undefined, { workerTimeout: '2' });
 
     expect(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS).toBe('2000');
+    expect(runFullAnalysisMock).toHaveBeenCalled();
+  });
+
+  it.each(['0', 'abc', '-5', 'Infinity'])(
+    'rejects invalid --worker-count value %s before analysis starts',
+    async (workerCount) => {
+      const { _captureLogger } = await import('../../src/core/logger.js');
+      const cap = _captureLogger();
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+      await analyzeCommand(undefined, { workerCount });
+
+      expect(process.exitCode).toBe(1);
+      expect(
+        cap.records().some((r) => r.msg === '  --worker-count must be a positive integer.\n'),
+      ).toBe(true);
+      expect(runFullAnalysisMock).not.toHaveBeenCalled();
+      cap.restore();
+    },
+  );
+
+  it('sets the worker count environment variable for valid values', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    await analyzeCommand(undefined, { workerCount: '3' });
+
+    expect(process.env.GITNEXUS_WORKER_COUNT).toBe('3');
     expect(runFullAnalysisMock).toHaveBeenCalled();
   });
 });

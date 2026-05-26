@@ -65,6 +65,10 @@ export function normalizeHttpPath(p: string): string {
   s = s.replace(/:\w+/g, '{param}');
   s = s.replace(/\{[^}]+\}/g, '{param}');
   s = s.replace(/\[[^\]]+\]/g, '{param}');
+  // Collapse API version segments (v5.0, v3.0, v4) to {param} so that
+  // provider /api/v5.0/sdk/chatbot and consumer /api/{param}/sdk/chatbot
+  // can match regardless of version number.
+  s = s.replace(/\/v\d+(\.\d+)*/g, '/{param}');
   // Preserve root: after stripping trailing slashes, the root "/"
   // collapses to "" which would produce malformed contract ids like
   // `http::GET::`. Restore a single slash for the root case.
@@ -78,7 +82,10 @@ export function normalizeHttpPath(p: string): string {
  *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
  */
 function normalizeConsumerPath(url: string): string {
-  const templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+  let templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+  // Collapse version-like template segments: v{param} → {param}
+  // (from patterns like /v${VERSION}/ → /v{param}/)
+  templated = templated.replace(/v\{param\}/g, '{param}');
   let pathOnly = templated;
   if (/^https?:\/\//i.test(templated)) {
     try {
@@ -93,6 +100,105 @@ function normalizeConsumerPath(url: string): string {
     .filter(Boolean)
     .map((segment) => (/^\d+$/.test(segment) ? '{param}' : segment));
   return `/${segments.join('/')}`.replace(/\/+$/, '') || '/';
+}
+
+// ─── base.js URL prefix resolution ──────────────────────────────────
+// Frontend projects like aihelp-customer-system define URL prefixes in a
+// base.js config file (e.g. `const base = { zentao: baseUrl + "/store/zentao" }`).
+// API modules then use template strings: `axios.get(`${base.zentao}/loadbindinfo`)`.
+// Without resolution, the tree-sitter scanner produces paths like
+// `${base.zentao}/loadbindinfo` → `{param}/loadbindinfo` after normalization,
+// which can't match backend routes like `/console/api/store/zentao/loadbindinfo`.
+// These helpers parse base.js to resolve the reference at extraction time.
+
+/**
+ * Strip protocol, host, and template placeholders from a URL to get the
+ * path portion only.  `https://${host}/console/api` → `/console/api`.
+ */
+function extractPathFromUrl(url: string): string {
+  const s = url.replace(/\$\{[^}]+\}/g, '');
+  const pathMatch = s.match(/^https?:\/\/[^/]*(\/.*)/i);
+  if (pathMatch) return pathMatch[1].replace(/\/+/g, '/');
+  if (s.startsWith('/')) return s.replace(/\/+/g, '/');
+  return '/' + s;
+}
+
+/**
+ * Parse a base.js config file and return a Map of `base.xxx` → resolved URL path.
+ * Handles:
+ *   - `var baseUrl = "https://${host}/console/api"` (prod value)
+ *   - `baseUrl = "/console/api"` (dev override, last assignment wins)
+ *   - `const base = { zentao: baseUrl + "/store/zentao", ... }`
+ */
+function parseBaseJsForUrlMap(content: string): Map<string, string> {
+  const varValues: Record<string, string> = {};
+
+  // Extract variable declarations: var/let/const name = "value" or `value`
+  const varDeclRegex = /(?:var|let|const)\s+(\w+)\s*=\s*([`"'])([\s\S]*?)\2/g;
+  let m: RegExpExecArray | null;
+  while ((m = varDeclRegex.exec(content)) !== null) {
+    varValues[m[1]] = extractPathFromUrl(m[3]);
+  }
+  // Reassignments inside if-blocks (dev-mode overrides); last one wins.
+  const reassignRegex = /^\s*(\w+)\s*=\s*([`"'])([\s\S]*?)\2/gm;
+  while ((m = reassignRegex.exec(content)) !== null) {
+    if (m[1] in varValues) {
+      varValues[m[1]] = extractPathFromUrl(m[3]);
+    }
+  }
+
+  // Find the base object literal
+  const objStartMatch = content.match(/(?:const|var|let)\s+base\s*=\s*\{/);
+  if (!objStartMatch) return new Map();
+  const objStartIdx = objStartMatch.index! + objStartMatch[0].length;
+  let depth = 1;
+  let objEndIdx = objStartIdx;
+  for (let i = objStartIdx; i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    if (content[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        objEndIdx = i;
+        break;
+      }
+    }
+  }
+
+  const objBody = content.substring(objStartIdx, objEndIdx);
+  const resultMap = new Map<string, string>();
+
+  const propRegex = /^\s*(\w+)\s*:\s*(.+?)\s*(?:,\s*)?$/gm;
+  while ((m = propRegex.exec(objBody)) !== null) {
+    const key = m[1];
+    const expr = m[2].trim();
+    // Pattern: varName + "/path"
+    const concatMatch = expr.match(/^(\w+)\s*\+\s*["']([^"']*)["']/);
+    if (concatMatch) {
+      const prefix = varValues[concatMatch[1]] || '';
+      resultMap.set(`base.${key}`, prefix + concatMatch[2]);
+      continue;
+    }
+    // Pattern: plain variable reference (e.g. `baseUrl: baseUrl`)
+    if (/^\w+$/.test(expr) && expr in varValues) {
+      resultMap.set(`base.${key}`, varValues[expr]);
+    }
+  }
+  return resultMap;
+}
+
+/**
+ * Resolve template string references in a consumer path.
+ * `${base.zentao}/loadbindinfo` → `/console/api/store/zentao/loadbindinfo`
+ * when the urlPrefixMap contains `base.zentao` → `/console/api/store/zentao`.
+ * Unresolvable references fall back to `{param}` so normalizeConsumerPath
+ * still treats them as placeholders.
+ */
+function resolveTemplatePath(rawPath: string, urlPrefixMap: Map<string, string>): string {
+  if (urlPrefixMap.size === 0) return rawPath;
+  return rawPath.replace(/\$\{([^}]+)\}/g, (_match: string, ref: string): string => {
+    const resolved = urlPrefixMap.get(ref);
+    return resolved !== undefined ? resolved : '{param}';
+  });
 }
 
 function contractIdFor(method: string, pathNorm: string): string {
@@ -199,12 +305,17 @@ export class HttpRouteExtractor implements ContractExtractor {
         ? graphProviders
         : this.extractProvidersSourceScan(await getScannedFiles(), getDetections);
 
+    // Build URL prefix map from base.js-like config files so template
+    // references like ${base.zentao} can be resolved to concrete paths.
+    const allFiles = await getScannedFiles();
+    const urlPrefixMap = this.buildUrlPrefixMap(repoPath, allFiles);
+
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
     const consumers =
       graphConsumers.length > 0
         ? graphConsumers
-        : this.extractConsumersSourceScan(await getScannedFiles(), getDetections);
+        : this.extractConsumersSourceScan(allFiles, getDetections, urlPrefixMap);
 
     return [...providers, ...consumers];
   }
@@ -374,7 +485,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     for (const row of rows) {
       const filePath = String(row.filePath ?? '');
       const routePath = String(row.routePath ?? '');
-      const pathNorm = normalizeHttpPath(routePath);
+      const pathNorm = normalizeConsumerPath(routePath);
       let method = 'GET';
       // Prefer the plugin's detected method if we can find a matching
       // fetch/axios call in the same file.
@@ -435,13 +546,15 @@ export class HttpRouteExtractor implements ContractExtractor {
   private extractConsumersSourceScan(
     files: string[],
     getDetections: (rel: string) => HttpDetection[],
+    urlPrefixMap: Map<string, string> = new Map(),
   ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
       const detections = getDetections(rel);
       for (const d of detections) {
         if (d.role !== 'consumer') continue;
-        const pathNorm = normalizeConsumerPath(d.path);
+        const resolvedPath = resolveTemplatePath(d.path, urlPrefixMap);
+        const pathNorm = normalizeConsumerPath(resolvedPath);
         out.push({
           contractId: contractIdFor(d.method, pathNorm),
           type: 'http',
@@ -460,6 +573,25 @@ export class HttpRouteExtractor implements ContractExtractor {
       }
     }
     return this.dedupeContracts(out);
+  }
+
+  // ─── URL prefix map builder (reads base.js-like config files) ──────
+
+  private buildUrlPrefixMap(repoPath: string, scannedFiles: string[]): Map<string, string> {
+    const urlPrefixMap = new Map<string, string>();
+    const baseCandidates = scannedFiles.filter((f) => {
+      const norm = f.replace(/\\/g, '/');
+      return norm === 'base.js' || norm.endsWith('/base.js');
+    });
+    for (const rel of baseCandidates) {
+      const content = readSafe(repoPath, rel);
+      if (!content) continue;
+      const parsed = parseBaseJsForUrlMap(content);
+      for (const [k, v] of parsed) {
+        urlPrefixMap.set(k, v);
+      }
+    }
+    return urlPrefixMap;
   }
 
   private dedupeContracts(items: ExtractedContract[]): ExtractedContract[] {

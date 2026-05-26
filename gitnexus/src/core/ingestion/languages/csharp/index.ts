@@ -79,7 +79,12 @@ export { getCsharpCaptureCacheStats, resetCsharpCaptureCacheStats } from './cach
 export { interpretCsharpImport, interpretCsharpTypeBinding } from './interpret.js';
 export { csharpMergeBindings } from './merge-bindings.js';
 export { csharpArityCompatibility } from './arity.js';
-export { resolveCsharpImportTarget, type CsharpResolveContext } from './import-target.js';
+export {
+  buildCsharpImportTargetIndex,
+  resolveCsharpImportTarget,
+  type CsharpImportTargetIndex,
+  type CsharpResolveContext,
+} from './import-target.js';
 export {
   csharpBindingScopeFor,
   csharpImportOwningScope,

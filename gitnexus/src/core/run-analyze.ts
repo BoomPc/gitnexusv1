@@ -11,6 +11,8 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { finished } from 'stream/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
@@ -53,6 +55,38 @@ import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+
+interface NetcoreFastProject {
+  name: string;
+  path: string;
+  dir: string;
+  sdk?: string;
+  targetFramework?: string;
+  outputType?: string;
+  assemblyName?: string;
+  rootNamespace?: string;
+  isHost: boolean;
+  serviceName?: string;
+  references: string[];
+  referencedBy: string[];
+}
+
+interface NetcoreFastMqEndpoint {
+  kind: 'rabbitmq-factory' | 'rabbitmq-bind-channel' | 'eventbus' | 'eventbus-helper';
+  role: 'provider' | 'consumer';
+  topic: string;
+  filePath: string;
+  line: number;
+  project?: string;
+  service?: string;
+  symbol?: string;
+}
+
+interface NetcoreFastMqLink {
+  topic: string;
+  providers: NetcoreFastMqEndpoint[];
+  consumers: NetcoreFastMqEndpoint[];
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -110,6 +144,8 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /** Fast, lower-memory mode tuned for very large .NET/C# repositories. */
+  netcoreFast?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -137,6 +173,188 @@ import {
   deriveEmbeddingCap,
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
+
+async function discoverNetcoreProjects(repoPath: string): Promise<NetcoreFastProject[]> {
+  const projects = new Map<string, NetcoreFastProject>();
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (
+        entry.name === '.git' ||
+        entry.name === '.gitnexus' ||
+        entry.name === 'bin' ||
+        entry.name === 'obj'
+      ) {
+        continue;
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile() && entry.name.endsWith('.csproj')) {
+        const relativePath = path.relative(repoPath, full).replace(/\\/g, '/');
+        const xml = await fs.readFile(full, 'utf-8').catch(() => '');
+        const dirRel = path.dirname(relativePath).replace(/\\/g, '/');
+        const name = path.basename(entry.name, '.csproj');
+        const sdk = xml.match(/<Project[^>]*Sdk="([^"]+)"/)?.[1];
+        const references = Array.from(xml.matchAll(/<ProjectReference[^>]*Include="([^"]+)"/g)).map(
+          (m) => path.normalize(path.join(path.dirname(relativePath), m[1])).replace(/\\/g, '/'),
+        );
+        const project: NetcoreFastProject = {
+          name,
+          path: relativePath,
+          dir: dirRel === '.' ? '' : dirRel,
+          sdk,
+          targetFramework: xml
+            .match(/<TargetFramework>\s*([^<]+)\s*<\/TargetFramework>/)?.[1]
+            ?.trim(),
+          outputType: xml.match(/<OutputType>\s*([^<]+)\s*<\/OutputType>/)?.[1]?.trim(),
+          assemblyName: xml.match(/<AssemblyName>\s*([^<]+)\s*<\/AssemblyName>/)?.[1]?.trim(),
+          rootNamespace: xml.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/)?.[1]?.trim(),
+          isHost: dirRel.startsWith('Hosts/') || /Microsoft\.NET\.Sdk\.Web/.test(sdk ?? ''),
+          serviceName: dirRel.startsWith('Hosts/')
+            ? dirRel.split('/').slice(0, 2).join('/')
+            : undefined,
+          references,
+          referencedBy: [],
+        };
+        projects.set(relativePath, project);
+      }
+    }
+  };
+
+  await walk(repoPath);
+  for (const project of projects.values()) {
+    for (const ref of project.references) {
+      const target = projects.get(ref);
+      if (target) target.referencedBy.push(project.path);
+    }
+  }
+  return Array.from(projects.values()).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function discoverNetcoreMq(
+  repoPath: string,
+  projects: NetcoreFastProject[],
+): Promise<{ endpoints: NetcoreFastMqEndpoint[]; links: NetcoreFastMqLink[] }> {
+  const endpoints: NetcoreFastMqEndpoint[] = [];
+  const ownerFor = (rel: string): NetcoreFastProject | undefined =>
+    projects
+      .filter((p) => rel === p.path || rel.startsWith(p.dir ? `${p.dir}/` : ''))
+      .sort((a, b) => b.dir.length - a.dir.length)[0];
+
+  const add = (
+    rel: string,
+    line: number,
+    role: 'provider' | 'consumer',
+    kind: NetcoreFastMqEndpoint['kind'],
+    topic: string,
+    symbol?: string,
+  ) => {
+    const project = ownerFor(rel);
+    endpoints.push({
+      kind,
+      role,
+      topic,
+      filePath: rel,
+      line,
+      project: project?.path,
+      service: project?.isHost ? (project.serviceName ?? project.dir) : undefined,
+      symbol,
+    });
+  };
+
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (
+        entry.name === '.git' ||
+        entry.name === '.gitnexus' ||
+        entry.name === 'bin' ||
+        entry.name === 'obj'
+      ) {
+        continue;
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.cs')) continue;
+      const rel = path.relative(repoPath, full).replace(/\\/g, '/');
+      const text = await fs.readFile(full, 'utf-8').catch(() => '');
+      if (!text) continue;
+      const lines = text.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const m of line.matchAll(
+          /RabbitMQFactory\.([A-Za-z0-9_]+)\s*\([^)]*\)\s*\.\s*(PublishMsg(?:ByConsistentHash)?)/g,
+        )) {
+          add(rel, i + 1, 'provider', 'rabbitmq-factory', m[1], m[2]);
+        }
+        for (const m of line.matchAll(/Bus\.Publish\s*\(\s*EventType\.([A-Za-z0-9_]+)/g)) {
+          add(rel, i + 1, 'provider', 'eventbus', m[1], 'Bus.Publish');
+        }
+        for (const m of line.matchAll(/EventBusPublishHelper\.([A-Za-z0-9_]+)\s*\(/g)) {
+          add(rel, i + 1, 'provider', 'eventbus-helper', m[1], 'EventBusPublishHelper');
+        }
+        for (const m of line.matchAll(
+          /Add(?:Dynamic|HashActivator)?HostService\s*<\s*([A-Za-z0-9_]+)\s*>[^(]*\(([^)]*)/g,
+        )) {
+          const configTopic = m[2].match(/config\?\.\s*([A-Za-z0-9_]+)/)?.[1];
+          add(rel, i + 1, 'consumer', 'rabbitmq-bind-channel', configTopic ?? m[1], m[1]);
+        }
+        for (const m of line.matchAll(/AddHostedService\s*<\s*([A-Za-z0-9_]+)\s*>/g)) {
+          add(rel, i + 1, 'consumer', 'rabbitmq-bind-channel', m[1], m[1]);
+        }
+        if (line.includes('BindChannel(')) {
+          const windowText = lines.slice(Math.max(0, i - 10), i + 2).join('\n');
+          const cfg =
+            windowText.match(
+              /_([A-Za-z0-9]+QueueConfig)\s*=\s*rabbitQueueConfig\.Value\.([A-Za-z0-9_]+)/,
+            )?.[2] ??
+            windowText.match(/_([A-Za-z0-9]+QueueConfig)\.Exchange/)?.[1] ??
+            path.basename(rel, '.cs');
+          add(rel, i + 1, 'consumer', 'rabbitmq-bind-channel', cfg, 'BindChannel');
+        }
+      }
+    }
+  };
+
+  await walk(repoPath);
+  const byTopic = new Map<string, NetcoreFastMqLink>();
+  const normalizeTopic = (value: string): string =>
+    value
+      .replace(/QueueConfig$/i, '')
+      .replace(/HostedService$/i, '')
+      .replace(/Consumer$/i, '')
+      .replace(/Handler$/i, '')
+      .replace(/MQ$/i, '')
+      .toLowerCase();
+  for (const ep of endpoints) {
+    const key = normalizeTopic(ep.topic);
+    let link = byTopic.get(key);
+    if (!link) {
+      link = { topic: ep.topic, providers: [], consumers: [] };
+      byTopic.set(key, link);
+    }
+    if (ep.role === 'provider') link.providers.push(ep);
+    else link.consumers.push(ep);
+  }
+  return {
+    endpoints,
+    links: Array.from(byTopic.values()).filter((l) => l.providers.length || l.consumers.length),
+  };
+}
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -353,7 +571,7 @@ export async function runFullAnalysis(
   // file contents haven't changed produce identical worker output).
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
-  const parseCache = await loadParseCache(storagePath);
+  const parseCache = options.netcoreFast ? undefined : await loadParseCache(storagePath);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
@@ -366,8 +584,85 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache },
+    { parseCache, skipGraphPhases: options.netcoreFast, netcoreFast: options.netcoreFast },
   );
+
+  if (options.netcoreFast) {
+    progress('done', 90, 'Writing netcore fast index...');
+    await fs.mkdir(storagePath, { recursive: true });
+    const fastIndexPath = path.join(storagePath, 'netcore-fast-index.json');
+    const fastStats = {
+      files: pipelineResult.totalFileCount,
+      nodes: pipelineResult.graph.nodeCount,
+      edges: pipelineResult.graph.relationshipCount,
+    };
+    const ws = createWriteStream(fastIndexPath, 'utf-8');
+    const projects = await discoverNetcoreProjects(repoPath);
+    const mq = await discoverNetcoreMq(repoPath, projects);
+    ws.write(
+      `${JSON.stringify({
+        repoPath,
+        indexedAt: new Date().toISOString(),
+        mode: 'netcore-fast',
+        stats: fastStats,
+        projects,
+        mq,
+      }).slice(0, -1)},"nodes":[`,
+    );
+    let firstNode = true;
+    pipelineResult.graph.forEachNode((n) => {
+      const row = {
+        id: n.id,
+        label: n.label,
+        name: n.properties?.name as string | undefined,
+        filePath: n.properties?.filePath as string | undefined,
+        startLine: n.properties?.startLine as number | undefined,
+        endLine: n.properties?.endLine as number | undefined,
+      };
+      ws.write(`${firstNode ? '' : ','}${JSON.stringify(row)}`);
+      firstNode = false;
+    });
+    ws.end(']}');
+    await finished(ws);
+
+    const newFileHashesRecord: Record<string, string> = {};
+    pipelineResult.graph.forEachNode((n) => {
+      if (n.label === 'File') {
+        const fp = n.properties?.filePath as string | undefined;
+        if (fp) newFileHashesRecord[fp] = '';
+      }
+    });
+    const meta = {
+      repoPath,
+      lastCommit: currentCommit,
+      indexedAt: new Date().toISOString(),
+      remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+      stats: {
+        files: fastStats.files,
+        nodes: fastStats.nodes,
+        edges: fastStats.edges,
+        embeddings: 0,
+      },
+      capabilities: {
+        semanticMode: 'exact-scan' as const,
+      },
+      schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
+    };
+    await saveMeta(storagePath, meta);
+    const projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      allowDuplicateName: options.allowDuplicateName,
+    });
+    progress('done', 100, `Netcore fast index complete: ${fastStats.nodes} nodes`);
+    return {
+      repoName: projectName,
+      repoPath,
+      stats: meta.stats,
+      pipelineResult,
+    };
+  }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -567,24 +862,40 @@ export async function runFullAnalysis(
       //    the SAME effectiveWriteSet so the subgraph and the deletes
       //    cover identical files (asymmetry would silently corrupt).
       const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
-      await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-        progress('lbug', pct, msg);
-      });
+      await loadGraphToLbug(
+        subgraph,
+        pipelineResult.repoPath,
+        storagePath,
+        (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+          progress('lbug', pct, msg);
+        },
+        { omitContent: options.netcoreFast, skipRelationshipFallback: options.netcoreFast },
+      );
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
-      await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-        progress('lbug', pct, msg);
-      });
+      await loadGraphToLbug(
+        pipelineResult.graph,
+        pipelineResult.repoPath,
+        storagePath,
+        (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+          progress('lbug', pct, msg);
+        },
+        { omitContent: options.netcoreFast, skipRelationshipFallback: options.netcoreFast },
+      );
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-    progress('fts', 85, 'Creating search indexes...');
-    await createSearchFTSIndexes();
-    progress('fts', 90, 'Search indexes ready');
+    if (!options.netcoreFast) {
+      progress('fts', 85, 'Creating search indexes...');
+      await createSearchFTSIndexes();
+      progress('fts', 90, 'Search indexes ready');
+    } else {
+      progress('fts', 90, 'Skipping search indexes in netcore-fast mode');
+    }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
@@ -628,7 +939,9 @@ export async function runFullAnalysis(
     }
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
-    const stats = await getLbugStats();
+    const stats = options.netcoreFast
+      ? { nodes: pipelineResult.graph.nodeCount, edges: pipelineResult.graph.relationshipCount }
+      : await getLbugStats();
     let embeddingSkipped = true;
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
 
@@ -724,14 +1037,16 @@ export async function runFullAnalysis(
 
     // Count embeddings in the index (cached + newly generated)
     let embeddingCount = 0;
-    try {
-      const embResult = await executeQuery(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
-      );
-      const row = embResult?.[0];
-      embeddingCount = Number(row?.cnt ?? row?.[0] ?? 0);
-    } catch {
-      /* table may not exist if embeddings never ran */
+    if (!options.netcoreFast) {
+      try {
+        const embResult = await executeQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+        );
+        const row = embResult?.[0];
+        embeddingCount = Number(row?.cnt ?? row?.[0] ?? 0);
+      } catch {
+        /* table may not exist if embeddings never ran */
+      }
     }
 
     if (!embeddingSkipped && stats.nodes > 0 && embeddingCount === 0) {
@@ -798,14 +1113,16 @@ export async function runFullAnalysis(
     // composition no longer matches anything in the current scan are
     // dead weight; the parse phase populates `usedKeys` as it processes
     // chunks).
-    try {
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+    if (parseCache !== undefined) {
+      try {
+        const pruned = pruneCache(parseCache, parseCache.usedKeys);
+        if (pruned > 0) {
+          log(`Parse cache: pruned ${pruned} stale chunk entries`);
+        }
+        await saveParseCache(storagePath, parseCache);
+      } catch (e) {
+        log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
       }
-      await saveParseCache(storagePath, parseCache);
-    } catch (e) {
-      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
 
     // Forward the --name alias and the registry-collision bypass bit.

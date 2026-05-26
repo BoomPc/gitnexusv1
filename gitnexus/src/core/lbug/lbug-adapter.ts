@@ -411,6 +411,7 @@ export const loadGraphToLbug = async (
   repoPath: string,
   storagePath: string,
   onProgress?: LbugProgressCallback,
+  opts?: { omitContent?: boolean; skipRelationshipFallback?: boolean },
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -421,7 +422,9 @@ export const loadGraphToLbug = async (
   const csvDir = path.join(storagePath, 'csv');
 
   log('Streaming CSVs to disk...');
-  const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
+  const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir, {
+    omitContent: opts?.omitContent,
+  });
 
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);
   const getNodeLabel = (nodeId: string): string => {
@@ -515,7 +518,7 @@ export const loadGraphToLbug = async (
       }
     }
 
-    if (failedPairCsvPaths.size > 0) {
+    if (failedPairCsvPaths.size > 0 && !opts?.skipRelationshipFallback) {
       log(`Inserting ${failedPairEdges} edges individually (missing schema pairs)`);
       // Read failed pair files and merge for fallback inserts
       const allLines: string[] = [relHeader];
@@ -535,6 +538,8 @@ export const loadGraphToLbug = async (
       if (allLines.length > 1) {
         await fallbackRelationshipInserts(allLines, validTables, getNodeLabel);
       }
+    } else if (failedPairCsvPaths.size > 0) {
+      log(`Skipped ${failedPairEdges} failed edge fallback inserts in fast mode`);
     }
   }
 

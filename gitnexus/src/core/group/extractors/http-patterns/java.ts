@@ -144,6 +144,73 @@ const OK_HTTP_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+// ─── Consumer: Static URL constants (Android SDK pattern) ─────────────
+// Matches two patterns:
+//   1) public static String XXX = "/sdk/api/...";  (direct string literal)
+//   2) public static String XXX = String.format("/sdk/api/%s/...", VERSION);
+//      (extracts the first string argument from String.format)
+// Heuristic: value starts with "/" and contains "/api/" or "/sdk/"
+const SDK_URL_DIRECT_PATTERNS = compilePatterns({
+  name: 'java-sdk-url-direct',
+  language: Java,
+  patterns: [
+    {
+      meta: { source: 'direct' },
+      query: `
+        (field_declaration
+          type: (type_identifier) @type (#eq? @type "String")
+          declarator: (variable_declarator
+            name: (identifier) @const_name
+            value: (string_literal) @path))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<{ source: string }>);
+
+const SDK_URL_FORMAT_PATTERNS = compilePatterns({
+  name: 'java-sdk-url-format',
+  language: Java,
+  patterns: [
+    {
+      meta: { source: 'format' },
+      query: `
+        (field_declaration
+          type: (type_identifier) @type (#eq? @type "String")
+          declarator: (variable_declarator
+            name: (identifier) @const_name
+            value: (method_invocation
+              object: (identifier) @fmt_obj (#eq? @fmt_obj "String")
+              name: (identifier) @fmt_method (#eq? @fmt_method "format")
+              arguments: (argument_list . (string_literal) @path))))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<{ source: string }>);
+
+function looksLikeApiPath(p: string): boolean {
+  if (!p.startsWith('/')) return false;
+  if (p.length < 6) return false;
+  if (/\.(html|css|js|png|jpg|ico|xml|json)$/i.test(p)) return false;
+  if (/\/api\/|\/v\d+\.?\d*\//.test(p)) return true;
+  if (/\/sdk\//.test(p)) return true;
+  return false;
+}
+
+function inferMethodFromPath(path: string, constName: string): string {
+  const upper = constName.toUpperCase();
+  if (
+    /SEND|POST|CREATE|ADD|UPLOAD|LOGIN|LOGOUT|AUTH|SUBMIT|RESOLVE|NOTE|EVALUATE|SET|INIT/.test(
+      upper,
+    )
+  )
+    return 'POST';
+  if (/DELETE|REMOVE|CANCEL/.test(upper)) return 'DELETE';
+  if (/PUT|UPDATE/.test(upper)) return 'PUT';
+  if (/GET|FETCH|LIST|SEARCH|QUERY|LOAD|DETAIL|UNREAD|POLL|CHECK/.test(upper)) return 'GET';
+  if (/TRACK|LOG|UPLOAD/.test(upper)) return 'POST';
+  return 'GET';
+}
+
 /**
  * Find the nearest enclosing class_declaration ancestor for a node, or
  * null if the node is top-level. Tree-sitter's SyntaxNode.parent walks
@@ -260,6 +327,33 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         name: null,
         confidence: 0.7,
       });
+    }
+
+    // ─── Consumers: SDK static URL constants ────────────────────────
+    const seenSdkPaths = new Set<string>();
+    for (const patterns of [SDK_URL_DIRECT_PATTERNS, SDK_URL_FORMAT_PATTERNS]) {
+      for (const match of runCompiledPatterns(patterns, tree)) {
+        const pathNode = match.captures.path;
+        const nameNode = match.captures.const_name;
+        if (!pathNode || !nameNode) continue;
+        const rawPath = unquoteLiteral(pathNode.text);
+        if (rawPath === null) continue;
+        // For String.format paths, replace %s with version placeholder
+        const normalizedPath = rawPath.replace(/%s/g, 'v{param}');
+        if (!looksLikeApiPath(rawPath) && !looksLikeApiPath(normalizedPath)) continue;
+        const dedupeKey = normalizedPath;
+        if (seenSdkPaths.has(dedupeKey)) continue;
+        seenSdkPaths.add(dedupeKey);
+        const httpMethod = inferMethodFromPath(rawPath, nameNode.text);
+        out.push({
+          role: 'consumer',
+          framework: 'android-sdk-static',
+          method: httpMethod,
+          path: normalizedPath,
+          name: nameNode.text,
+          confidence: 0.6,
+        });
+      }
     }
 
     return out;

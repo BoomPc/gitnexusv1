@@ -32,14 +32,17 @@
  */
 
 import Parser from 'tree-sitter';
-import CSharp from 'tree-sitter-c-sharp';
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 const CSHARP_SCOPE_QUERY = `
 ;; Scopes
 (compilation_unit) @scope.module
 
-(namespace_declaration) @scope.namespace
-(file_scoped_namespace_declaration) @scope.namespace
+(namespace_declaration
+  name: (_) @scope.namespace.name) @scope.namespace
+(file_scoped_namespace_declaration
+  name: (_) @scope.namespace.name) @scope.namespace
 
 (class_declaration) @scope.class
 (interface_declaration) @scope.class
@@ -509,18 +512,25 @@ const CSHARP_SCOPE_QUERY = `
 
 let _parser: Parser | null = null;
 let _query: Parser.Query | null = null;
+let _grammar: Parameters<Parser['setLanguage']>[0] | null = null;
+
+function getCsharpGrammar(): Parameters<Parser['setLanguage']>[0] {
+  return (_grammar ??= getLanguageGrammar(SupportedLanguages.CSharp) as Parameters<
+    Parser['setLanguage']
+  >[0]);
+}
 
 export function getCsharpParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(CSharp as Parameters<Parser['setLanguage']>[0]);
+    _parser.setLanguage(getCsharpGrammar());
   }
   return _parser;
 }
 
 export function getCsharpScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(CSharp as Parameters<Parser['setLanguage']>[0], CSHARP_SCOPE_QUERY);
+    _query = new Parser.Query(getCsharpGrammar(), CSHARP_SCOPE_QUERY);
   }
   return _query;
 }

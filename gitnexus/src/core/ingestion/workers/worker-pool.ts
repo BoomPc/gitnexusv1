@@ -76,6 +76,13 @@ function nonNegativeInteger(value: unknown): number | undefined {
     : undefined;
 }
 
+function defaultWorkerCount(): number {
+  return (
+    positiveInteger(process.env.GITNEXUS_WORKER_COUNT) ??
+    Math.min(8, Math.max(1, os.cpus().length - 1))
+  );
+}
+
 export function resolveWorkerPoolOptions(
   options: WorkerPoolOptions = {},
 ): Required<WorkerPoolOptions> {
@@ -185,7 +192,7 @@ export const createWorkerPool = (
     throw new Error(`Worker script not found: ${workerPath}`);
   }
 
-  const size = poolSize ?? Math.min(8, Math.max(1, os.cpus().length - 1));
+  const size = poolSize ?? defaultWorkerCount();
   const poolOptions = resolveWorkerPoolOptions(options);
   const workers: Worker[] = [];
   let poolBroken = false;

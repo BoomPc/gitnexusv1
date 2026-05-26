@@ -657,6 +657,23 @@ describe('worker pool integration', () => {
     return zeroPool.terminate();
   });
 
+  it('uses GITNEXUS_WORKER_COUNT when pool size is omitted', async () => {
+    const { tempDir, workerPath } = writeTempWorker('gitnexus-worker-count-', '');
+    const previous = process.env.GITNEXUS_WORKER_COUNT;
+    process.env.GITNEXUS_WORKER_COUNT = '2';
+
+    try {
+      pool = createWorkerPool(pathToFileURL(workerPath) as URL);
+      expect(pool.size).toBe(2);
+    } finally {
+      await pool?.terminate();
+      pool = undefined;
+      if (previous === undefined) delete process.env.GITNEXUS_WORKER_COUNT;
+      else process.env.GITNEXUS_WORKER_COUNT = previous;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!hasDistWorker)('dispatch with size 0 rejects clearly', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     const zeroPool = createWorkerPool(workerUrl, 0);

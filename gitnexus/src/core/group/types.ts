@@ -54,6 +54,14 @@ export interface MatchingConfig {
    * @default false
    */
   exclude_links_param_only_paths?: boolean;
+  /**
+   * Prefixes to strip from consumer-side HTTP paths before matching.
+   * Useful when a reverse proxy adds a path prefix (e.g. `/console/api`)
+   * that backend routes don't have. Each prefix is tried in order;
+   * the first that produces a match wins.
+   * @default []
+   */
+  http_consumer_strip_prefixes?: string[];
 }
 
 export interface SymbolRef {

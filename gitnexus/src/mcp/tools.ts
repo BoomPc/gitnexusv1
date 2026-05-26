@@ -547,4 +547,66 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'netcore_summary',
+    description: 'Summarize a netcore-fast index: projects, hosts, and MQ endpoint/topic counts.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Indexed repository name or path.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'netcore_impact',
+    description:
+      'Find owning .csproj, candidate release services, and MQ endpoints for a file path, class, or project in a netcore-fast index.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'File path, class name, project name, or csproj path.',
+        },
+        repo: { type: 'string', description: 'Indexed repository name or path.' },
+      },
+      required: ['target'],
+    },
+  },
+  {
+    name: 'netcore_mq',
+    description: 'Show MQ providers and consumers for a topic in a netcore-fast index.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'MQ topic/config/factory name.' },
+        repo: { type: 'string', description: 'Indexed repository name or path.' },
+      },
+      required: ['topic'],
+    },
+  },
+  {
+    name: 'netcore_release_candidates',
+    description:
+      'Use git diff plus netcore-fast project graph to suggest candidate release services.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Indexed repository name or path.' },
+        scope: {
+          type: 'string',
+          description: 'What to analyze: unstaged, staged, all, or compare',
+          enum: ['unstaged', 'staged', 'all', 'compare'],
+          default: 'unstaged',
+        },
+        base_ref: { type: 'string', description: 'Base ref for compare scope.' },
+      },
+      required: [],
+    },
+  },
 ];

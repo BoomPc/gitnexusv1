@@ -205,6 +205,10 @@ export interface StreamedCSVResult {
   relRows: number;
 }
 
+export interface StreamCSVOptions {
+  omitContent?: boolean;
+}
+
 /**
  * Stream all CSV data directly to disk files.
  * Iterates graph nodes exactly ONCE — routes each node to the right writer.
@@ -214,6 +218,7 @@ export const streamAllCSVsToDisk = async (
   graph: KnowledgeGraph,
   repoPath: string,
   csvDir: string,
+  options: StreamCSVOptions = {},
 ): Promise<StreamedCSVResult> => {
   // Remove stale CSVs from previous crashed runs, then recreate
   try {
@@ -226,7 +231,9 @@ export const streamAllCSVsToDisk = async (
   const prevMax = process.getMaxListeners();
   process.setMaxListeners(prevMax + 40);
 
-  const contentCache = new FileContentCache(repoPath);
+  const contentCache = options.omitContent ? undefined : new FileContentCache(repoPath);
+  const getContent = (node: GraphNode): Promise<string> =>
+    contentCache === undefined ? Promise.resolve('') : extractContent(node, contentCache);
 
   // Create writers for every node type up-front
   const fileWriter = new BufferedCSVWriter(
@@ -332,7 +339,7 @@ export const streamAllCSVsToDisk = async (
 
     switch (node.label) {
       case 'File': {
-        const content = await extractContent(node, contentCache);
+        const content = await getContent(node);
         await fileWriter.addRow(
           [
             escapeCSVField(node.id),
@@ -387,7 +394,7 @@ export const streamAllCSVsToDisk = async (
         break;
       }
       case 'Method': {
-        const content = await extractContent(node, contentCache);
+        const content = await getContent(node);
         await methodWriter.addRow(
           [
             escapeCSVField(node.id),
@@ -405,7 +412,7 @@ export const streamAllCSVsToDisk = async (
         break;
       }
       case 'Section': {
-        const content = await extractContent(node, contentCache);
+        const content = await getContent(node);
         await sectionWriter.addRow(
           [
             escapeCSVField(node.id),
@@ -455,7 +462,7 @@ export const streamAllCSVsToDisk = async (
         // Code element nodes (Function, Class, Interface, CodeElement)
         const writer = codeWriterMap[node.label];
         if (writer) {
-          const content = await extractContent(node, contentCache);
+          const content = await getContent(node);
           await writer.addRow(
             [
               escapeCSVField(node.id),
@@ -472,7 +479,7 @@ export const streamAllCSVsToDisk = async (
           // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
           const mlWriter = multiLangWriters.get(node.label);
           if (mlWriter) {
-            const content = await extractContent(node, contentCache);
+            const content = await getContent(node);
             await mlWriter.addRow(
               [
                 escapeCSVField(node.id),

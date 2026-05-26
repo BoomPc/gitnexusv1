@@ -905,6 +905,19 @@ const HTTP_CLIENT_RECEIVERS = new Set([
   'conn',
 ]);
 
+const NETCORE_FAST_LABELS = new Set<NodeLabel>([
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  'Record',
+  'Delegate',
+  'Namespace',
+  'Method',
+  'Constructor',
+  'Property',
+]);
+
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
   'Get',
@@ -1445,6 +1458,8 @@ const processFileGroup = (
     }
 
     const provider = getProvider(language);
+    const netcoreFastCSharp =
+      process.env.GITNEXUS_NETCORE_FAST === '1' && language === SupportedLanguages.CSharp;
 
     // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
     // resolution pipeline. No-op (returns undefined) for every language
@@ -1452,17 +1467,92 @@ const processFileGroup = (
     // Runs BEFORE legacy extraction and its result is independent: a
     // failure here is caught inside `extractParsedFile` and does NOT
     // affect the legacy DAG path that follows.
-    const parsedFile = extractParsedFile(
-      provider,
-      parseContent,
-      file.path,
-      (message) => {
-        if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else logger.warn(message);
-      },
-      tree,
-    );
-    if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+    if (!netcoreFastCSharp) {
+      const parsedFile = extractParsedFile(
+        provider,
+        parseContent,
+        file.path,
+        (message) => {
+          if (parentPort) parentPort.postMessage({ type: 'warning', message });
+          else logger.warn(message);
+        },
+        tree,
+      );
+      if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+    }
+
+    if (netcoreFastCSharp) {
+      for (const match of matches) {
+        const captureMap: Record<string, SyntaxNode> = {};
+        for (const c of match.captures) captureMap[c.name] = c.node;
+        if (captureMap['import'] && captureMap['import.source']) {
+          const rawImportPath = preprocessImportPath(
+            captureMap['import.source'].text,
+            captureMap['import'],
+            provider,
+          );
+          if (rawImportPath) {
+            result.imports.push({ filePath: file.path, rawImportPath, language });
+          }
+          continue;
+        }
+
+        const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+        const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
+        if (!definitionNode || !defaultNodeLabel) continue;
+        if (!NETCORE_FAST_LABELS.has(defaultNodeLabel)) continue;
+
+        const nameNode = captureMap['name'];
+        const extractedClassSymbol =
+          provider.classExtractor?.isTypeDeclaration(definitionNode) === true
+            ? provider.classExtractor.extract(definitionNode, {
+                name: nameNode?.text,
+                type: defaultNodeLabel,
+              })
+            : null;
+        const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
+        const name = extractedClassSymbol?.name ?? nameNode?.text ?? definitionNode.text;
+        if (!name) continue;
+
+        const nodeId = generateId(nodeLabel, `${file.path}:${name}`);
+        const startLine = definitionNode.startPosition.row + 1;
+        const endLine = definitionNode.endPosition.row + 1;
+        result.nodes.push({
+          id: nodeId,
+          label: nodeLabel,
+          properties: {
+            name,
+            filePath: file.path,
+            startLine,
+            endLine,
+            language,
+            isExported: true,
+            ...(extractedClassSymbol?.qualifiedName
+              ? { qualifiedName: extractedClassSymbol.qualifiedName }
+              : {}),
+          },
+        });
+        result.symbols.push({
+          filePath: file.path,
+          name,
+          nodeId,
+          type: nodeLabel,
+          ...(extractedClassSymbol?.qualifiedName
+            ? { qualifiedName: extractedClassSymbol.qualifiedName }
+            : {}),
+        });
+        const fileId = generateId('File', file.path);
+        result.relationships.push({
+          id: generateId('DEFINES', `${fileId}->${nodeId}`),
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: 'netcore-fast',
+        });
+      }
+      continue;
+    }
 
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage edges (EXTENDS/IMPLEMENTS) are created by heritage-processor which runs

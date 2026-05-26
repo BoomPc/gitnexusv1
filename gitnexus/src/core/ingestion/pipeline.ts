@@ -42,6 +42,8 @@ import {
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;
+  /** Skip scope-resolution and other expensive precision passes for large .NET/C# repos. */
+  netcoreFast?: boolean;
   /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
   skipWorkers?: boolean;
   /**
@@ -94,8 +96,11 @@ function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
     toolsPhase,
     ormPhase,
     crossFilePhase,
-    scopeResolutionPhase,
   ];
+
+  if (!options?.netcoreFast) {
+    phases.push(scopeResolutionPhase);
+  }
 
   if (!options?.skipGraphPhases) {
     phases.push(mroPhase, communitiesPhase, processesPhase);

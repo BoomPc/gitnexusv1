@@ -223,7 +223,8 @@ export function runScopeResolution(
   if (PROF && preExtracted !== undefined) {
     logger.warn(`[scope-resolution prof] pre-extracted hits: ${preExtractedHits}/${files.length}`);
   }
-  provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  const hookFileContents = (): ReadonlyMap<string, string> => getFileContents();
+  provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: hookFileContents() });
 
   // Reconcile scope-resolution's ownership view into the SemanticModel.
   // See `reconcile-ownership.ts` for the full rationale (Contract
@@ -296,7 +297,7 @@ export function runScopeResolution(
   // `indexes.bindings` remains immutable post-finalize (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
-      fileContents: getFileContents(),
+      fileContents: hookFileContents(),
       treeCache,
     });
   }

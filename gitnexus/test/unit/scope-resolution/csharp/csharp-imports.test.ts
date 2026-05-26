@@ -9,7 +9,14 @@
 import { describe, it, expect } from 'vitest';
 import { emitCsharpScopeCaptures } from '../../../../src/core/ingestion/languages/csharp/captures.js';
 import { interpretCsharpImport } from '../../../../src/core/ingestion/languages/csharp/interpret.js';
-import { resolveCsharpImportTarget } from '../../../../src/core/ingestion/languages/csharp/import-target.js';
+import {
+  buildCsharpImportTargetIndex,
+  resolveCsharpImportTarget,
+} from '../../../../src/core/ingestion/languages/csharp/import-target.js';
+import { populateCsharpNamespaceSiblings } from '../../../../src/core/ingestion/languages/csharp/namespace-siblings.js';
+import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
+import { csharpProvider } from '../../../../src/core/ingestion/languages/csharp.js';
+import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 
 function importsFor(src: string): ParsedImport[] {
@@ -104,9 +111,45 @@ describe('interpretCsharpImport — using flavors', () => {
   });
 });
 
+describe('extractCsharpFileStructureFromParsed', () => {
+  it('populates same-namespace siblings without raw file contents', () => {
+    const service = extractParsedFile(
+      csharpProvider,
+      'namespace MyApp.Models;\nclass Service { User Make() => new User(); }',
+      'Models/Service.cs',
+    );
+    const user = extractParsedFile(
+      csharpProvider,
+      'namespace MyApp.Models;\nclass User {}',
+      'Models/User.cs',
+    );
+    expect(service).toBeDefined();
+    expect(user).toBeDefined();
+    const parsedFiles = [service!, user!];
+    for (const parsed of parsedFiles) csharpProvider.populateOwners?.(parsed);
+    const indexes = finalizeScopeModel(parsedFiles);
+
+    populateCsharpNamespaceSiblings(parsedFiles, indexes, { fileContents: new Map() });
+
+    const augmentedNames = Array.from(indexes.bindingAugmentations.values()).flatMap((bindings) =>
+      Array.from(bindings.keys()),
+    );
+    expect(augmentedNames).toContain('User');
+  });
+});
+
 describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
   function ctx(fromFile: string, paths: string[]): WorkspaceIndex {
     return { fromFile, allFilePaths: new Set(paths) } as unknown as WorkspaceIndex;
+  }
+
+  function parsed(targetRaw: string): ParsedImport {
+    return {
+      kind: 'namespace',
+      localName: targetRaw.split('.').at(-1) ?? targetRaw,
+      importedName: targetRaw,
+      targetRaw,
+    };
   }
 
   it('resolves `MyApp.Services` to `MyApp/Services/...cs` when a direct child exists', () => {
@@ -162,16 +205,39 @@ describe('resolveCsharpImportTarget — suffix match against .cs files', () => {
   });
 
   it('returns null when WorkspaceIndex has the wrong shape', () => {
-    const parsed: ParsedImport = {
-      kind: 'namespace',
-      localName: 'X',
-      importedName: 'X',
-      targetRaw: 'X',
-    };
     // Intentionally missing `allFilePaths`.
-    const result = resolveCsharpImportTarget(parsed, {
+    const result = resolveCsharpImportTarget(parsed('X'), {
       fromFile: 'a.cs',
     } as unknown as WorkspaceIndex);
     expect(result).toBe(null);
+  });
+
+  it('uses a prebuilt import target index when provided', () => {
+    const paths = ['src/Program.cs', 'src/MyApp/Models/User.cs'];
+    const index = buildCsharpImportTargetIndex(new Set(paths));
+    const result = resolveCsharpImportTarget(parsed('MyApp.Models'), {
+      fromFile: 'src/Program.cs',
+      allFilePaths: new Set(['wrong/Models/User.cs']),
+      importTargetIndex: index,
+    });
+
+    expect(result).toBe('src/MyApp/Models/User.cs');
+  });
+
+  it('does not iterate allFilePaths on indexed lookups', () => {
+    const index = buildCsharpImportTargetIndex(new Set(['src/MyApp/Models/User.cs']));
+    const throwingSet = {
+      [Symbol.iterator](): IterableIterator<string> {
+        throw new Error('allFilePaths should not be iterated');
+      },
+    };
+
+    const result = resolveCsharpImportTarget(parsed('MyApp.Models'), {
+      fromFile: 'src/Program.cs',
+      allFilePaths: throwingSet,
+      importTargetIndex: index,
+    });
+
+    expect(result).toBe('src/MyApp/Models/User.cs');
   });
 });
