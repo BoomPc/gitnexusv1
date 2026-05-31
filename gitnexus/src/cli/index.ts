@@ -285,6 +285,39 @@ netcore
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
+const workspace = program
+  .command('workspace')
+  .description('Fast multi-repo workspace contract index and skill routing');
+
+workspace
+  .command('index [paths...]')
+  .description('Build a lightweight workspace index for multiple repos')
+  .option('-n, --name <name>', 'Workspace name', 'default')
+  .option('-o, --out <path>', 'Output index path')
+  .option('--max-file-size-kb <kb>', 'Skip files larger than this size', '256')
+  .option('--json', 'Print structured summary')
+  .action(createLazyAction(() => import('./workspace.js'), 'workspaceIndexCommand'));
+
+workspace
+  .command('impact')
+  .description('Find affected repos, contracts, and skills from git diff')
+  .option('-n, --name <name>', 'Workspace name', 'default')
+  .option('-i, --index <path>', 'Workspace index path')
+  .option('-s, --scope <scope>', 'unstaged, staged, all, or compare', 'unstaged')
+  .option('-b, --base-ref <ref>', 'Base ref for compare scope')
+  .option('--json', 'Print structured JSON')
+  .action(createLazyAction(() => import('./workspace.js'), 'workspaceImpactCommand'));
+
+workspace
+  .command('skills')
+  .description('Route to the smallest useful skill set for current workspace diff')
+  .option('-n, --name <name>', 'Workspace name', 'default')
+  .option('-i, --index <path>', 'Workspace index path')
+  .option('-s, --scope <scope>', 'unstaged, staged, all, or compare', 'unstaged')
+  .option('-b, --base-ref <ref>', 'Base ref for compare scope')
+  .option('--json', 'Print structured JSON')
+  .action(createLazyAction(() => import('./workspace.js'), 'workspaceSkillsCommand'));
+
 program
   .command('eval-server')
   .description('Start lightweight HTTP server for fast tool calls during evaluation')
