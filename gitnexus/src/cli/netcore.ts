@@ -6,6 +6,8 @@ import {
   netcoreReleaseCandidates,
   netcoreSummary,
 } from '../core/netcore-fast-index.js';
+import { refreshNetcoreFastIndexForDiff } from '../core/netcore-fast-refresh.js';
+import { netcoreReleaseSites } from '../core/netcore-release-sites.js';
 
 function output(value: unknown): void {
   writeSync(1, typeof value === 'string' ? value + '\n' : JSON.stringify(value, null, 2) + '\n');
@@ -40,4 +42,60 @@ export async function netcoreReleaseCandidatesCommand(options?: {
       options?.baseRef,
     ),
   );
+}
+
+export async function netcoreReleaseSitesCommand(options?: {
+  repo?: string;
+  scope?: string;
+  baseRef?: string;
+  mapping?: string;
+  json?: boolean;
+  refresh?: boolean;
+}): Promise<void> {
+  const repoPath = options?.repo ?? process.cwd();
+  let index = await loadNetcoreFastIndex(repoPath);
+  let refresh;
+  if (options?.refresh !== false) {
+    const refreshed = await refreshNetcoreFastIndexForDiff(index, repoPath, {
+      scope: options?.scope ?? 'unstaged',
+      baseRef: options?.baseRef,
+    });
+    index = refreshed.index;
+    refresh = refreshed.result;
+  }
+  const result = await netcoreReleaseSites(index, repoPath, {
+    scope: options?.scope ?? 'unstaged',
+    baseRef: options?.baseRef,
+    mappingPath: options?.mapping,
+  });
+  result.refresh = refresh;
+  output(options?.json ? result : formatReleaseSites(result));
+}
+
+function formatReleaseSites(result: Awaited<ReturnType<typeof netcoreReleaseSites>>): string {
+  const lines = [
+    `Mapping: ${result.mapping}`,
+    `Changed files: ${result.summary.changedFiles}`,
+    `Changed projects: ${result.summary.changedProjects}`,
+    `Candidate services: ${result.summary.candidateServices}`,
+    ...(result.refresh
+      ? [
+          `Incremental refresh: ${String((result.refresh as { refreshedFiles?: number }).refreshedFiles ?? 0)} files`,
+        ]
+      : []),
+    '',
+    '需要发布:',
+  ];
+
+  if (result.releaseSites.length === 0) {
+    lines.push('- (none)');
+  } else {
+    lines.push(...result.releaseSites.map((site) => `- ${site}`));
+  }
+
+  if (result.unmappedProjects.length > 0) {
+    lines.push('', '未映射项目，直接打印项目:', ...result.unmappedProjects.map((p) => `- ${p}`));
+  }
+
+  return lines.join('\n');
 }

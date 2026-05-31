@@ -266,6 +266,23 @@ netcore
   .option('-b, --base-ref <ref>', 'Base ref for compare scope')
   .action(createLazyAction(() => import('./netcore.js'), 'netcoreReleaseCandidatesCommand'));
 
+netcore
+  .command('release-sites')
+  .description('Map git-diff release candidates to deploy site names from a markdown mapping file')
+  .option('-r, --repo <path>', 'Repository path (defaults to cwd)')
+  .option('-s, --scope <scope>', 'unstaged, staged, all, or compare', 'unstaged')
+  .option('-b, --base-ref <ref>', 'Base ref for compare scope')
+  .option(
+    '-m, --mapping <path>',
+    'Mapping markdown path (defaults to docs/发布站点MQ对应关系梳理.md)',
+  )
+  .option(
+    '--no-refresh',
+    'Skip the default incremental netcore-fast refresh before reading git diff',
+  )
+  .option('--json', 'Print structured JSON instead of the deploy-site list')
+  .action(createLazyAction(() => import('./netcore.js'), 'netcoreReleaseSitesCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program

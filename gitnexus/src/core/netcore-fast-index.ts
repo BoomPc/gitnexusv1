@@ -48,9 +48,18 @@ export interface FastIndex {
   mq?: { endpoints?: FastMqEndpoint[]; links?: FastMqLink[] };
 }
 
+export function netcoreFastIndexPath(repoPath: string): string {
+  return path.join(getStoragePath(path.resolve(repoPath)), 'netcore-fast-index.json');
+}
+
 export async function loadNetcoreFastIndex(repoPath: string): Promise<FastIndex> {
-  const file = path.join(getStoragePath(path.resolve(repoPath)), 'netcore-fast-index.json');
-  return JSON.parse(await fs.readFile(file, 'utf-8')) as FastIndex;
+  return JSON.parse(await fs.readFile(netcoreFastIndexPath(repoPath), 'utf-8')) as FastIndex;
+}
+
+export async function saveNetcoreFastIndex(repoPath: string, index: FastIndex): Promise<void> {
+  const file = netcoreFastIndexPath(repoPath);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify(index, null, 2)}\n`, 'utf-8');
 }
 
 export function normalizeNetcoreTopic(value: string): string {
@@ -212,24 +221,7 @@ export function netcoreReleaseCandidates(
   scope = 'unstaged',
   baseRef?: string,
 ) {
-  const args =
-    scope === 'staged'
-      ? ['diff', '--cached', '--name-status']
-      : scope === 'all'
-        ? ['diff', 'HEAD', '--name-status']
-        : scope === 'compare' && baseRef
-          ? ['diff', baseRef, '--name-status']
-          : ['diff', '--name-status'];
-  const out = execFileSync('git', args, {
-    cwd: repoPath,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const files = out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => l.split(/\s+/).at(-1)!.replace(/\\/g, '/'));
+  const files = netcoreChangedFiles(repoPath, scope, baseRef).map((f) => f.path);
   const projects = index.projects ?? [];
   const byProject = new Map<
     string,
@@ -295,4 +287,32 @@ export function netcoreReleaseCandidates(
       releaseCandidates: p.releaseProjects.map((h) => h.path),
     })),
   };
+}
+
+export function netcoreChangedFiles(
+  repoPath: string,
+  scope = 'unstaged',
+  baseRef?: string,
+): { status: string; path: string }[] {
+  const args =
+    scope === 'staged'
+      ? ['diff', '--cached', '--name-status']
+      : scope === 'all'
+        ? ['diff', 'HEAD', '--name-status']
+        : scope === 'compare' && baseRef
+          ? ['diff', baseRef, '--name-status']
+          : ['diff', '--name-status'];
+  const out = execFileSync('git', args, {
+    cwd: repoPath,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return out
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(/\s+/);
+      return { status: parts[0] ?? 'M', path: parts.at(-1)!.replace(/\\/g, '/') };
+    });
 }

@@ -13,6 +13,10 @@
 >
 > - Fast low-memory `.NET / C#` indexing with `gitnexus analyze --netcore-fast`.
 > - `gitnexus netcore release-candidates` for git-diff-based release candidates.
+> - `gitnexus netcore release-sites` maps those candidates to the exact deploy
+>   site names from `docs/发布站点MQ对应关系梳理.md`, and prints unmapped projects
+>   directly. It runs an incremental netcore-fast refresh for the current diff
+>   by default, so day-to-day checks do not need a full re-index.
 > - `gitnexus netcore impact <file|class|project>` for owning `.csproj`, MQ
 >   endpoints, and candidate release services.
 > - Executable/Worker/Consumer projects are treated as release candidates, not

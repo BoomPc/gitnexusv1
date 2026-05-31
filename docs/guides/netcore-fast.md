@@ -309,3 +309,39 @@ node $cli netcore release-candidates -r $repo
 | 日期 | 说明 |
 |------|------|
 | 2026-05-25 | 初版：fast 索引、CLI `netcore`、MCP `netcore_*`、release-candidates |
+
+## Deterministic release-sites CLI
+
+`release-candidates` answers "which projects/services are related to this diff".
+For the final deploy checklist, use `release-sites`; it reads the local markdown
+mapping document and prints every associated site name. Unmapped projects are
+printed directly instead of being dropped. By default, `release-sites` first runs
+an incremental netcore-fast refresh for the selected git diff, so normal
+day-to-day checks avoid a full repository re-index.
+
+```powershell
+npx gitnexus netcore release-sites
+npx gitnexus netcore release-sites -s staged
+npx gitnexus netcore release-sites -s compare -b main
+npx gitnexus netcore release-sites --json
+npx gitnexus netcore release-sites --no-refresh
+```
+
+Default mapping path:
+
+```text
+docs/发布站点MQ对应关系梳理.md
+```
+
+Use `-m <path>` when the mapping file is elsewhere.
+
+Example text output:
+
+```text
+需要发布:
+- consumer
+- consumer_hash
+
+未映射项目，直接打印项目:
+- AIHelp.SomeWorker/AIHelp.SomeWorker.csproj
+```
