@@ -1,4 +1,37 @@
 # GitNexus
+
+> **BoomPc / netcore-fast release-impact fork**
+>
+> This fork is currently focused on one practical workflow: use GitNexus as an
+> MCP-backed local code intelligence service, then combine it with Codex/Cursor
+> skills to answer a release question for .NET/C# repositories:
+>
+> **"For the current branch or git diff, which services/sites should be
+> deployed?"**
+>
+> Main additions in `feature/pc/netcore`:
+>
+> - Fast low-memory `.NET / C#` indexing with `gitnexus analyze --netcore-fast`.
+> - `gitnexus netcore release-candidates` for git-diff-based release candidates.
+> - `gitnexus netcore impact <file|class|project>` for owning `.csproj`, MQ
+>   endpoints, and candidate release services.
+> - Executable/Worker/Consumer projects are treated as release candidates, not
+>   only `Hosts/*` or Web SDK projects.
+> - MCP tools expose the same netcore-fast capability so AI agents can validate
+>   release scope from local code structure.
+>
+> Quick start for teammates:
+>
+> ```bash
+> git clone --branch feature/pc/netcore --single-branch https://github.com/BoomPc/gitnexusv1.git
+> cd gitnexusv1/gitnexus
+> npm ci
+> npm install -g .
+> gitnexus doctor
+> ```
+>
+> Windows PowerShell users can run `gitnexus.cmd doctor` if `.ps1` execution is
+> blocked.
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
