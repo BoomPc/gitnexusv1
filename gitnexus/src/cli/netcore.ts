@@ -74,7 +74,7 @@ export async function netcoreReleaseSitesCommand(options?: {
 
 function formatReleaseSites(result: Awaited<ReturnType<typeof netcoreReleaseSites>>): string {
   const lines = [
-    `Mapping: ${result.mapping}`,
+    'Mapping: loaded',
     `Changed files: ${result.summary.changedFiles}`,
     `Changed projects: ${result.summary.changedProjects}`,
     `Candidate services: ${result.summary.candidateServices}`,
@@ -84,7 +84,7 @@ function formatReleaseSites(result: Awaited<ReturnType<typeof netcoreReleaseSite
         ]
       : []),
     '',
-    '需要发布:',
+    'Release sites:',
   ];
 
   if (result.releaseSites.length === 0) {
@@ -94,7 +94,11 @@ function formatReleaseSites(result: Awaited<ReturnType<typeof netcoreReleaseSite
   }
 
   if (result.unmappedProjects.length > 0) {
-    lines.push('', '未映射项目，直接打印项目:', ...result.unmappedProjects.map((p) => `- ${p}`));
+    lines.push(
+      '',
+      'Unmapped projects:',
+      ...result.unmappedProjects.map((project) => `- ${project}`),
+    );
   }
 
   return lines.join('\n');
