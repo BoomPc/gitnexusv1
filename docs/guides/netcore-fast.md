@@ -92,7 +92,15 @@ npx gitnexus analyze . --netcore-fast --force --index-only
 1. 项目目录在仓库内以 `Hosts/` 为前缀（例如 `Hosts/Foo/Bar.csproj` → `serviceName` 为 `Hosts/Foo`）
 2. `.csproj` 使用 SDK `Microsoft.NET.Sdk.Web`
 
-发布候选服务 = 从被改动的库项目沿 `referencedBy` **向上** 直到命中的 Host 项目。
+发布候选服务 = 从被改动的库项目沿 `referencedBy` **向上** 找可发布项目。
+
+当前可发布项目包括：
+
+1. `Hosts/*` 下的项目
+2. `Microsoft.NET.Sdk.Web` 项目
+3. 非测试的 `OutputType=Exe` / Worker 项目，例如独立 Consumer、Job、Worker
+
+这样 `AIHelp.Logstash.Consumer` 这类不在 `Hosts/*` 下、但实际独立部署的 Consumer，也会在引用链命中时进入发布候选。
 
 ---
 
@@ -167,7 +175,7 @@ npx gitnexus netcore release-candidates -s compare -b main
 - `releaseCandidates[]`：每个 Host 服务、关联改动文件、因哪些库项目牵进来
 - `projects[]`：按库项目聚合的改动文件与对应 Host
 
-**注意**：这是启发式结果（项目引用 + Host 规则），不是部署流水线里的权威清单；发布前仍要人工确认。
+**注意**：这是启发式结果（项目引用 + 可发布项目规则），不是部署流水线里的权威清单；发布前仍要人工确认。
 
 ---
 

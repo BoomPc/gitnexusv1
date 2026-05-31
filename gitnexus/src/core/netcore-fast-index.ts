@@ -7,6 +7,11 @@ export interface FastProject {
   name: string;
   path: string;
   dir: string;
+  sdk?: string;
+  targetFramework?: string;
+  outputType?: string;
+  assemblyName?: string;
+  rootNamespace?: string;
   isHost: boolean;
   serviceName?: string;
   references: string[];
@@ -65,7 +70,26 @@ export function ownerProject(projects: FastProject[], filePath: string): FastPro
     .sort((a, b) => b.dir.length - a.dir.length)[0];
 }
 
-export function upstreamHosts(projects: FastProject[], start: FastProject): FastProject[] {
+function isTestProject(project: FastProject): boolean {
+  return /(^|[./\\-])(test|tests|unit[-_]?tests?|unittests)([./\\-]|$)/i.test(
+    `${project.name}/${project.path}`,
+  );
+}
+
+export function isReleaseProject(project: FastProject): boolean {
+  if (project.isHost) return true;
+  if (isTestProject(project)) return false;
+  return project.outputType === 'Exe' || /Microsoft\.NET\.Sdk\.Worker/i.test(project.sdk ?? '');
+}
+
+function releaseServiceName(project: FastProject): string {
+  return project.serviceName ?? project.dir ?? project.name;
+}
+
+export function upstreamReleaseProjects(
+  projects: FastProject[],
+  start: FastProject,
+): FastProject[] {
   const byPath = new Map(projects.map((p) => [p.path, p]));
   const out = new Map<string, FastProject>();
   const seen = new Set<string>();
@@ -76,7 +100,7 @@ export function upstreamHosts(projects: FastProject[], start: FastProject): Fast
     seen.add(nextPath);
     const p = byPath.get(nextPath);
     if (!p) continue;
-    if (p.isHost) out.set(p.path, p);
+    if (isReleaseProject(p)) out.set(p.path, p);
     queue.push(...p.referencedBy);
   }
   return Array.from(out.values()).sort((a, b) => a.path.localeCompare(b.path));
@@ -85,9 +109,11 @@ export function upstreamHosts(projects: FastProject[], start: FastProject): Fast
 export function netcoreSummary(index: FastIndex) {
   const projects = index.projects ?? [];
   const hosts = projects.filter((p) => p.isHost);
+  const releaseProjects = projects.filter((p) => isReleaseProject(p));
   return {
     stats: index.stats,
     projects: projects.length,
+    releaseProjects: releaseProjects.length,
     mq: {
       endpoints: index.mq?.endpoints?.length ?? 0,
       topics: index.mq?.links?.length ?? 0,
@@ -95,7 +121,10 @@ export function netcoreSummary(index: FastIndex) {
         (l) => l.providers.length > 0 && l.consumers.length > 0,
       ).length,
     },
-    hosts: hosts.map((h) => ({ name: h.name, path: h.path, service: h.serviceName ?? h.dir })),
+    hosts: hosts.map((h) => ({ name: h.name, path: h.path, service: releaseServiceName(h) })),
+    executables: releaseProjects
+      .filter((p) => !p.isHost)
+      .map((p) => ({ name: p.name, path: p.path, service: releaseServiceName(p) })),
   };
 }
 
@@ -116,7 +145,9 @@ export function netcoreImpact(index: FastIndex, target: string) {
     );
   if (!project) return { target, found: false, message: 'No owning .csproj found in fast index.' };
   const filePath = projectByName ? undefined : target.replace(/\\/g, '/');
-  const hosts = project.isHost ? [project] : upstreamHosts(projects, project);
+  const releaseProjects = isReleaseProject(project)
+    ? [project]
+    : upstreamReleaseProjects(projects, project);
   const mqEndpoints = (index.mq?.endpoints ?? []).filter(
     (ep) => ep.project === project.path || (filePath !== undefined && ep.filePath === filePath),
   );
@@ -132,10 +163,10 @@ export function netcoreImpact(index: FastIndex, target: string) {
       line: ep.line,
       service: ep.service,
     })),
-    releaseCandidates: hosts.map((h) => ({
+    releaseCandidates: releaseProjects.map((h) => ({
       name: h.name,
       path: h.path,
-      service: h.serviceName ?? h.dir,
+      service: releaseServiceName(h),
     })),
   };
 }
@@ -202,7 +233,7 @@ export function netcoreReleaseCandidates(
   const projects = index.projects ?? [];
   const byProject = new Map<
     string,
-    { project: FastProject; files: string[]; hosts: FastProject[] }
+    { project: FastProject; files: string[]; releaseProjects: FastProject[] }
   >();
   for (const file of files) {
     const project = ownerProject(projects, file);
@@ -212,7 +243,9 @@ export function netcoreReleaseCandidates(
       item = {
         project,
         files: [],
-        hosts: project.isHost ? [project] : upstreamHosts(projects, project),
+        releaseProjects: isReleaseProject(project)
+          ? [project]
+          : upstreamReleaseProjects(projects, project),
       };
       byProject.set(project.path, item);
     }
@@ -229,14 +262,14 @@ export function netcoreReleaseCandidates(
     }
   >();
   for (const item of byProject.values()) {
-    for (const host of item.hosts) {
+    for (const host of item.releaseProjects) {
       const key = host.path;
       let svc = serviceMap.get(key);
       if (!svc) {
         svc = {
           name: host.name,
           path: host.path,
-          service: host.serviceName ?? host.dir,
+          service: releaseServiceName(host),
           changedFiles: [],
           reasonProjects: [],
         };
@@ -259,7 +292,7 @@ export function netcoreReleaseCandidates(
       path: p.project.path,
       isHost: p.project.isHost,
       changedFiles: p.files,
-      releaseCandidates: p.hosts.map((h) => h.path),
+      releaseCandidates: p.releaseProjects.map((h) => h.path),
     })),
   };
 }
