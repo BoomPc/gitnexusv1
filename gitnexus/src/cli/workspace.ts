@@ -3,6 +3,7 @@ import {
   defaultWorkspaceIndexPath,
   loadWorkspaceFastIndex,
   saveWorkspaceFastIndex,
+  workspaceFocus,
   workspaceImpact,
 } from '../core/workspace-fast-index.js';
 
@@ -37,6 +38,7 @@ export async function workspaceIndexCommand(
       `Endpoints: ${index.stats.endpoints}`,
       `Contracts: ${index.stats.contracts}`,
       `Skills: ${index.stats.skills}`,
+      `Symbols: ${index.repos.reduce((sum, repo) => sum + (repo.stats.symbols ?? 0), 0)}`,
       `Index size: ${formatBytes(await fileSize(out))}`,
       `Duration: ${formatMs(Date.now() - started)}`,
     ].join('\n'),
@@ -94,6 +96,26 @@ export async function workspaceSkillsCommand(options?: {
   );
 }
 
+export async function workspaceFocusCommand(
+  query: string,
+  options?: {
+    index?: string;
+    name?: string;
+    limit?: string;
+    json?: boolean;
+  },
+): Promise<void> {
+  const name = options?.name ?? 'default';
+  const indexPath = options?.index ?? defaultWorkspaceIndexPath(name);
+  const index = await loadWorkspaceFastIndex(indexPath);
+  const result = workspaceFocus(index, query, { limit: Number(options?.limit ?? 20) });
+  if (options?.json) {
+    print(result);
+    return;
+  }
+  print(formatFocus(result));
+}
+
 function formatImpact(result: ReturnType<typeof workspaceImpact>): string {
   const lines = [
     `Changed files: ${result.summary.changedFiles}`,
@@ -131,6 +153,60 @@ function formatImpact(result: ReturnType<typeof workspaceImpact>): string {
           (skill) => `- ${skill.repo}: ${skill.name}${skill.path ? ` (${skill.path})` : ''}`,
         )),
   );
+  return lines.join('\n');
+}
+
+function formatFocus(result: ReturnType<typeof workspaceFocus>): string {
+  const lines = [
+    `Query: ${result.summary.query}`,
+    `Matched repos: ${result.summary.matchedRepos}`,
+    `Matched contracts: ${result.summary.matchedContracts}`,
+    `Candidate files: ${result.summary.candidateFiles}`,
+    `Skills: ${result.summary.skills}`,
+    '',
+    'Repos to focus:',
+    ...(result.matchedRepos.length === 0
+      ? ['- (none)']
+      : result.matchedRepos.map(
+          (repo) => `- ${repo.repo} (${repo.reasons.slice(0, 3).join(', ')})`,
+        )),
+    '',
+    'Contracts to inspect:',
+  ];
+  if (result.matchedContracts.length === 0) {
+    lines.push('- (none)');
+  } else {
+    lines.push(
+      ...result.matchedContracts.slice(0, 20).map((contract) => {
+        const repos = new Set([
+          ...contract.providers.map((endpoint) => endpoint.repo),
+          ...contract.consumers.map((endpoint) => endpoint.repo),
+          ...contract.references.map((endpoint) => endpoint.repo),
+        ]);
+        return `- ${contract.type}:${contract.key} -> ${Array.from(repos).sort().join(', ')}`;
+      }),
+    );
+  }
+  lines.push('', 'Candidate files:');
+  lines.push(
+    ...(result.candidateFiles.length === 0
+      ? ['- (none)']
+      : result.candidateFiles
+          .slice(0, 20)
+          .map(
+            (file) =>
+              `- ${file.repo}: ${file.filePath}${file.lines.length ? `:${file.lines[0]}` : ''}`,
+          )),
+  );
+  lines.push('', 'Skills to load after focus:');
+  lines.push(
+    ...(result.skillsToLoad.length === 0
+      ? ['- (none)']
+      : result.skillsToLoad.map(
+          (skill) => `- ${skill.repo}: ${skill.name}${skill.path ? ` (${skill.path})` : ''}`,
+        )),
+  );
+  lines.push('', `Bootstrap: ${result.bootstrap.message}`);
   return lines.join('\n');
 }
 

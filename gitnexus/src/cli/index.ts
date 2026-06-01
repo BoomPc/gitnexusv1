@@ -299,6 +299,17 @@ workspace
   .action(createLazyAction(() => import('./workspace.js'), 'workspaceIndexCommand'));
 
 workspace
+  .command('focus <query>')
+  .description(
+    'Pre-development focus: route a requirement/topic/API/file to repos, contracts, and skills',
+  )
+  .option('-n, --name <name>', 'Workspace name', 'default')
+  .option('-i, --index <path>', 'Workspace index path')
+  .option('-l, --limit <n>', 'Max repos/contracts/files to show', '20')
+  .option('--json', 'Print structured JSON')
+  .action(createLazyAction(() => import('./workspace.js'), 'workspaceFocusCommand'));
+
+workspace
   .command('impact')
   .description('Find affected repos, contracts, and skills from git diff')
   .option('-n, --name <name>', 'Workspace name', 'default')

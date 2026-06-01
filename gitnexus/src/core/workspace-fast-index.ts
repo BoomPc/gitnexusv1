@@ -32,10 +32,12 @@ export interface WorkspaceRepoIndex {
     filesScanned: number;
     bytesScanned: number;
     endpoints: number;
+    symbols: number;
     skills: number;
     durationMs: number;
   };
   endpoints: WorkspaceEndpoint[];
+  symbols?: WorkspaceSymbol[];
   skills: WorkspaceSkill[];
 }
 
@@ -66,6 +68,14 @@ export interface WorkspaceSkill {
   triggers: string[];
 }
 
+export interface WorkspaceSymbol {
+  repo: string;
+  filePath: string;
+  line: number;
+  kind: string;
+  name: string;
+}
+
 export interface WorkspaceImpactResult {
   summary: {
     scope: string;
@@ -79,6 +89,30 @@ export interface WorkspaceImpactResult {
   affectedRepos: string[];
   affectedContracts: WorkspaceContract[];
   skillsToLoad: WorkspaceSkill[];
+}
+
+export interface WorkspaceFocusResult {
+  summary: {
+    query: string;
+    matchedRepos: number;
+    matchedContracts: number;
+    candidateFiles: number;
+    skills: number;
+  };
+  matchedRepos: Array<{ repo: string; score: number; reasons: string[] }>;
+  matchedContracts: Array<WorkspaceContract & { score: number; reasons: string[] }>;
+  candidateFiles: Array<{
+    repo: string;
+    filePath: string;
+    score: number;
+    reasons: string[];
+    lines: number[];
+  }>;
+  skillsToLoad: WorkspaceSkill[];
+  bootstrap: {
+    message: string;
+    suggestedNextCommands: string[];
+  };
 }
 
 const DEFAULT_MAX_FILE_SIZE = 256 * 1024;
@@ -98,7 +132,16 @@ const SKIP_DIRS = new Set([
   '.gradle',
   '.idea',
   '.vs',
+  '.venv',
+  'venv',
+  '__pycache__',
 ]);
+const SKIP_PATH_PATTERNS = [
+  /(^|\/)wwwroot\/lib\//i,
+  /(^|\/)(vendor|vendors|third[_-]?party)\//i,
+  /(^|\/)jquery[./-]/i,
+  /\.min\.(js|css)$/i,
+];
 const TEXT_EXTS = new Set([
   '.cs',
   '.csproj',
@@ -242,6 +285,143 @@ export function routeSkills(
   });
 }
 
+export function workspaceFocus(
+  index: WorkspaceFastIndex,
+  query: string,
+  options?: { limit?: number },
+): WorkspaceFocusResult {
+  const limit = options?.limit ?? 20;
+  const terms = tokenizeFocusQuery(query);
+  const repoScores = new Map<string, { score: number; reasons: Set<string> }>();
+  const fileScores = new Map<
+    string,
+    { repo: string; filePath: string; score: number; reasons: Set<string>; lines: Set<number> }
+  >();
+
+  const contractMatches = index.contracts
+    .map((contract) => {
+      const score = scoreText(`${contract.type} ${contract.key}`, terms);
+      const endpointScore = Math.max(
+        0,
+        ...[...contract.providers, ...contract.consumers, ...contract.references].map((endpoint) =>
+          scoreEndpoint(endpoint, terms),
+        ),
+      );
+      const total = score + endpointScore;
+      return {
+        ...contract,
+        score: total,
+        reasons: focusReasons(`${contract.type}:${contract.key}`, terms),
+      };
+    })
+    .filter((contract) => contract.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  for (const repo of index.repos) {
+    const repoScore = scoreText(`${repo.name} ${repo.kind}`, terms);
+    if (repoScore > 0) addRepoScore(repoScores, repo.name, repoScore, `repo:${repo.name}`);
+    for (const symbol of repo.symbols ?? []) {
+      const score = scoreText(
+        `${symbol.name} ${symbol.kind} ${symbol.filePath} ${symbol.repo}`,
+        terms,
+      );
+      if (score <= 0) continue;
+      addRepoScore(repoScores, repo.name, score, `${symbol.kind}:${symbol.name}`);
+      const key = `${repo.name}\0${symbol.filePath}`;
+      let item = fileScores.get(key);
+      if (!item) {
+        item = {
+          repo: repo.name,
+          filePath: symbol.filePath,
+          score: 0,
+          reasons: new Set<string>(),
+          lines: new Set<number>(),
+        };
+        fileScores.set(key, item);
+      }
+      item.score += score * focusPathWeight(symbol.filePath);
+      item.reasons.add(`${symbol.kind}:${symbol.name}`);
+      item.lines.add(symbol.line);
+    }
+    for (const endpoint of repo.endpoints) {
+      const score = scoreEndpoint(endpoint, terms);
+      if (score <= 0) continue;
+      addRepoScore(repoScores, repo.name, score, `${endpoint.type}:${endpoint.key}`);
+      const key = `${repo.name}\0${endpoint.filePath}`;
+      let item = fileScores.get(key);
+      if (!item) {
+        item = {
+          repo: repo.name,
+          filePath: endpoint.filePath,
+          score: 0,
+          reasons: new Set<string>(),
+          lines: new Set<number>(),
+        };
+        fileScores.set(key, item);
+      }
+      item.score += score * focusPathWeight(endpoint.filePath);
+      item.reasons.add(`${endpoint.type}:${endpoint.key}`);
+      item.lines.add(endpoint.line);
+    }
+  }
+
+  for (const contract of contractMatches) {
+    for (const endpoint of [...contract.providers, ...contract.consumers, ...contract.references]) {
+      addRepoScore(repoScores, endpoint.repo, contract.score, `${contract.type}:${contract.key}`);
+    }
+  }
+
+  const matchedRepos = Array.from(repoScores.entries())
+    .map(([repo, value]) => ({
+      repo,
+      score: value.score,
+      reasons: Array.from(value.reasons).slice(0, 8),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  const affectedRepos = new Set(matchedRepos.map((repo) => repo.repo));
+  const skillsToLoad = routeSkills(index, affectedRepos, contractMatches);
+  const candidateFiles = Array.from(fileScores.values())
+    .map((item) => ({
+      repo: item.repo,
+      filePath: item.filePath,
+      score: item.score,
+      reasons: Array.from(item.reasons).slice(0, 8),
+      lines: Array.from(item.lines)
+        .sort((a, b) => a - b)
+        .slice(0, 8),
+    }))
+    .sort(
+      (a, b) =>
+        Number(hasExactLongTermReason(b, terms)) - Number(hasExactLongTermReason(a, terms)) ||
+        b.score - a.score,
+    )
+    .slice(0, limit);
+
+  return {
+    summary: {
+      query,
+      matchedRepos: matchedRepos.length,
+      matchedContracts: contractMatches.length,
+      candidateFiles: candidateFiles.length,
+      skills: skillsToLoad.length,
+    },
+    matchedRepos,
+    matchedContracts: contractMatches,
+    candidateFiles,
+    skillsToLoad,
+    bootstrap: {
+      message:
+        'Use this as a pre-development focus result: load only the listed repo skills, then ask the model to inspect candidate files/contracts before editing.',
+      suggestedNextCommands: [
+        'gitnexus workspace focus "<requirement>"',
+        'gitnexus workspace impact -s compare -b <branch>',
+      ],
+    },
+  };
+}
+
 async function indexWorkspaceRepo(
   repoPathInput: string,
   options?: { maxFileSize?: number },
@@ -252,12 +432,14 @@ async function indexWorkspaceRepo(
   const maxFileSize = options?.maxFileSize ?? DEFAULT_MAX_FILE_SIZE;
   const files = await listWorkspaceFiles(repoPath, maxFileSize);
   const endpoints: WorkspaceEndpoint[] = [];
+  const symbols: WorkspaceSymbol[] = [];
   let bytesScanned = 0;
   for (const file of files) {
     bytesScanned += file.size;
     const text = await fs.readFile(path.join(repoPath, file.path), 'utf-8').catch(() => '');
     if (!text) continue;
     endpoints.push(...extractEndpoints(repoName, file.path, text));
+    symbols.push(...extractSymbols(repoName, file.path, text));
   }
   const skills = await discoverSkills(repoName, repoPath, endpoints);
   return {
@@ -270,10 +452,12 @@ async function indexWorkspaceRepo(
       filesScanned: files.length,
       bytesScanned,
       endpoints: endpoints.length,
+      symbols: symbols.length,
       skills: skills.length,
       durationMs: Date.now() - started,
     },
     endpoints,
+    symbols,
     skills,
   };
 }
@@ -289,20 +473,107 @@ async function listWorkspaceFiles(
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (SKIP_DIRS.has(entry.name)) continue;
+      if (entry.name.startsWith('.venv') || entry.name.startsWith('__pycache__')) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
         continue;
       }
       if (!entry.isFile()) continue;
+      const relativePath = normalizePath(path.relative(repoPath, full));
+      if (isSkippedWorkspacePath(relativePath)) continue;
       const ext = path.extname(entry.name);
       if (!TEXT_EXTS.has(ext)) continue;
       const stat = await fs.stat(full).catch(() => undefined);
       if (!stat || stat.size > maxFileSize) continue;
-      out.push({ path: normalizePath(path.relative(repoPath, full)), size: stat.size });
+      out.push({ path: relativePath, size: stat.size });
     }
   }
   return out;
+}
+
+function isSkippedWorkspacePath(filePath: string): boolean {
+  return SKIP_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+}
+
+function extractSymbols(repo: string, filePath: string, text: string): WorkspaceSymbol[] {
+  const symbols: WorkspaceSymbol[] = [];
+  const seen = new Set<string>();
+  const lines = text.split(/\r?\n/);
+  const patterns: Array<{ kind: string; regex: RegExp }> = filePath.endsWith('.py')
+    ? [
+        { kind: 'class', regex: /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+        { kind: 'function', regex: /^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+      ]
+    : filePath.endsWith('.ts') ||
+        filePath.endsWith('.tsx') ||
+        filePath.endsWith('.js') ||
+        filePath.endsWith('.jsx')
+      ? [
+          { kind: 'class', regex: /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+          { kind: 'function', regex: /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+          {
+            kind: 'function',
+            regex: /\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\(/,
+          },
+        ]
+      : [
+          { kind: 'class', regex: /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+          { kind: 'interface', regex: /\binterface\s+([A-Za-z_][A-Za-z0-9_]*)/ },
+          {
+            kind: 'method',
+            regex: /^\s*[A-Za-z0-9_<>,\[\]?.]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
+          },
+          {
+            kind: 'method',
+            regex:
+              /\b(?:public|private|protected|internal|static|async|virtual|override|sealed|\s)+[A-Za-z0-9_<>,\[\]?.]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
+          },
+        ];
+  for (let i = 0; i < lines.length; i++) {
+    for (const pattern of patterns) {
+      const match = lines[i].match(pattern.regex);
+      if (match?.[1]) addSymbol(symbols, seen, repo, filePath, i + 1, pattern.kind, match[1]);
+    }
+    for (const match of lines[i].matchAll(/\b([A-Za-z_][A-Za-z0-9_]{3,})\s*\(/g)) {
+      const name = match[1];
+      if (isNoisySymbolName(name)) continue;
+      addSymbol(symbols, seen, repo, filePath, i + 1, 'call', name);
+    }
+  }
+  return symbols;
+}
+
+function addSymbol(
+  symbols: WorkspaceSymbol[],
+  seen: Set<string>,
+  repo: string,
+  filePath: string,
+  line: number,
+  kind: string,
+  name: string,
+): void {
+  const key = `${filePath}\0${line}\0${kind}\0${name}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  symbols.push({ repo, filePath, line, kind, name });
+}
+
+function isNoisySymbolName(name: string): boolean {
+  return [
+    'if',
+    'for',
+    'foreach',
+    'while',
+    'switch',
+    'catch',
+    'using',
+    'return',
+    'typeof',
+    'nameof',
+    'console',
+    'require',
+  ].includes(name.toLowerCase());
 }
 
 function extractEndpoints(repo: string, filePath: string, text: string): WorkspaceEndpoint[] {
@@ -550,6 +821,106 @@ function gitText(cwd: string, args: string[]): string {
   } catch {
     return '';
   }
+}
+
+function tokenizeFocusQuery(query: string): string[] {
+  const rawTerms: string[] = [];
+  const camelTerms: string[] = [];
+  for (const chunk of query.split(/[^A-Za-z0-9_\-./:\u4e00-\u9fff]+/)) {
+    const raw = chunk.trim();
+    if (raw.length < 2) continue;
+    rawTerms.push(raw.toLowerCase());
+    const hasIdentifierShape = /[a-z][A-Z]|[A-Za-z][0-9]|[0-9][A-Za-z]/.test(raw);
+    if (hasIdentifierShape && raw.length >= 6) continue;
+    camelTerms.push(
+      ...raw
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/([A-Za-z])([0-9])/g, '$1 $2')
+        .replace(/([0-9])([A-Za-z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9_\-./:\u4e00-\u9fff]+/)
+        .map((term) => term.trim().toLowerCase())
+        .filter((term) => term.length >= 2),
+    );
+  }
+  return Array.from(
+    new Set(
+      [...rawTerms, ...camelTerms].filter(
+        (term) =>
+          !['the', 'and', 'for', 'with', 'config', 'game', 'push', 'validate'].includes(term),
+      ),
+    ),
+  );
+}
+
+function scoreEndpoint(endpoint: WorkspaceEndpoint, terms: string[]): number {
+  return scoreText(
+    `${endpoint.type} ${endpoint.role} ${endpoint.key} ${endpoint.repo} ${endpoint.filePath} ${endpoint.symbol ?? ''}`,
+    terms,
+  );
+}
+
+function scoreText(text: string, terms: string[]): number {
+  if (terms.length === 0) return 0;
+  const haystack = text.toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    const exactWord = new RegExp(`(^|[^a-z0-9_])${escapeRegExp(term)}([^a-z0-9_]|$)`, 'i').test(
+      haystack,
+    );
+    if (haystack === term) score += 600;
+    else if (exactWord)
+      score +=
+        term.length >= 12
+          ? Math.max(900, term.length * 60)
+          : term.length >= 8
+            ? Math.max(160, term.length * 12)
+            : Math.max(20, term.length * 2);
+    else if (term.length >= 12 && haystack.includes(term)) score += Math.max(600, term.length * 40);
+    else if (term.length >= 8 && haystack.includes(term)) score += Math.max(100, term.length * 8);
+    else if (term.length >= 4 && haystack.includes(term))
+      score += Math.max(2, Math.min(12, term.length));
+  }
+  return score;
+}
+
+function focusPathWeight(filePath: string): number {
+  const lower = filePath.toLowerCase();
+  if (/\/(test|tests|unittest|unittests)\//i.test(lower)) return 0.45;
+  if (lower.includes('/wwwroot/') || lower.includes('/dist/') || lower.includes('/build/'))
+    return 0.2;
+  return 1;
+}
+
+function hasExactLongTermReason(
+  item: { filePath: string; reasons: string[] },
+  terms: string[],
+): boolean {
+  const haystack = `${item.filePath} ${item.reasons.join(' ')}`.toLowerCase();
+  return terms.some((term) => term.length >= 12 && haystack.includes(term));
+}
+
+function focusReasons(text: string, terms: string[]): string[] {
+  const haystack = text.toLowerCase();
+  return terms.filter((term) => haystack.includes(term)).slice(0, 8);
+}
+
+function addRepoScore(
+  scores: Map<string, { score: number; reasons: Set<string> }>,
+  repo: string,
+  score: number,
+  reason: string,
+): void {
+  let item = scores.get(repo);
+  if (!item) {
+    item = { score: 0, reasons: new Set<string>() };
+    scores.set(repo, item);
+  }
+  item.score += score;
+  item.reasons.add(reason);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function isUsefulContract(contract: WorkspaceContract): boolean {
